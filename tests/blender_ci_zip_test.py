@@ -1,9 +1,12 @@
 """Validate the CI-built add-on zip: install, enable, load core, render a cube."""
 import bpy
+import glob
+import os
 import sys
 import traceback
 
-ZIP = r"C:\LineForge\build\ci-artifacts\lineforge-0.2.0.zip"
+ZIP = sorted(glob.glob(r"C:\LineForge\build\ci-artifacts\lineforge-*.zip"),
+             key=lambda p: os.path.getmtime(p))[-1]
 
 
 def main():
@@ -19,7 +22,7 @@ def main():
     info = renderer.core_info()
     print("CORE_INFO", info)
     assert info["available"], info.get("error")
-    assert info["version"] == "0.2.0", info["version"]
+    assert info["version"] == renderer.ADDON_VERSION, info["version"]
     assert "win64" in info["path"].replace("\\", "/"), info["path"]
 
     import mathutils

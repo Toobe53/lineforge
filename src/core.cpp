@@ -313,17 +313,21 @@ Result render(const SceneView& sv, const Settings& S) {
         if (!pv[v0].ok || !pv[v1].ok) continue;
         int t0 = sv.edge_tris ? sv.edge_tris[2 * e + 0] : -1;
         int t1 = sv.edge_tris ? sv.edge_tris[2 * e + 1] : -1;
-        if (sv.tri_skip) {
-            if (t0 >= 0 && sv.tri_skip[t0]) t0 = -1;
-            if (t1 >= 0 && sv.tri_skip[t1]) t1 = -1;
+        const bool skip0 = sv.tri_skip && t0 >= 0 && sv.tri_skip[t0] != 0;
+        const bool skip1 = sv.tri_skip && t1 >= 0 && sv.tri_skip[t1] != 0;
+        if (t0 >= 0 && t1 >= 0) {
+            // An edge between drawn and skipped geometry is not a real rim: skipping a
+            // sheer/helper face must not turn its border into a boundary line.
+            if (skip0 || skip1) continue;
         }
         if (t0 < 0 && t1 < 0) continue;
         if (t1 < 0 || t0 < 0) {
+            const int tf = (t0 >= 0) ? t0 : t1;
+            if (tf >= 0 && sv.tri_skip && sv.tri_skip[tf]) continue;
             // Open rims: only draw the rim of the side that faces the camera.
             // The far side of a shell is either hidden by depth or belongs to
             // geometry the render does not actually show (inner shells, cards,
             // transparent garment layers), which produced ghost outlines.
-            const int tf = (t0 >= 0) ? t0 : t1;
             const Vec3 nb{sv.tri_normals[3 * tf], sv.tri_normals[3 * tf + 1], sv.tri_normals[3 * tf + 2]};
             const Vec3 pb{sv.verts[3 * v0], sv.verts[3 * v0 + 1], sv.verts[3 * v0 + 2]};
             if (S.styles[LT_BOUNDARY].enabled && dot3(nb, sub3(sv.cam_pos, pb)) > 0.f)

@@ -71,7 +71,152 @@ def _is_helper_material(name):
     return ("outline" in n) or n.endswith("_hull") or ("hull" in n and "outline" in n)
 
 
-def extract(context, width, height, use_render_visibility=True, exclude=()):
+def _is_shell_modifier(mod):
+    """True for modifier stacks that exist only to build a thick outline shell.
+
+    VRM imports (MToon) put a Geometry Nodes modifier named "MToon Outline (...)" on the
+    same object as the visible surface. The shell is pushed along the normals, so its
+    silhouette sits outside the real mesh and produced the large ghost outline in the demo
+    render. Evaluating the mesh without those modifiers keeps the visible surface intact.
+    """
+    name = (mod.name or "").casefold()
+    if "outline" in name or "hull" in name:
+        return True
+    if mod.type == 'NODES':
+        group = getattr(mod, "node_group", None)
+        gname = (getattr(group, "name", "") or "").casefold()
+        return "outline" in gname or "hull" in gname
+    return False
+
+
+def _hide_shell_modifiers(depsgraph):
+    """Disable outline-shell modifiers; returns a restore list (empty when nothing changed)."""
+    restore = []
+    for ob in depsgraph.objects:
+        if ob.type != 'MESH':
+            continue
+        orig = ob.original
+        if orig is None:
+            continue
+        for mod in orig.modifiers:
+            if mod.show_viewport or mod.show_render:
+                if _is_shell_modifier(mod):
+                    restore.append((mod, mod.show_viewport, mod.show_render))
+                    mod.show_viewport = False
+                    mod.show_render = False
+    return restore
+
+
+def _find_alpha_source(mat, max_nodes=64):
+    """Locate the image texture (and channel) that drives Principled Alpha, or None.
+
+    Returns (image, channel) with channel 0..2 for R/G/B and 3 for alpha.
+    """
+    if mat is None or not mat.use_nodes:
+        return None
+    tree = mat.node_tree
+    if tree is None:
+        return None
+    start = None
+    for node in tree.nodes:
+        if node.type == 'BSDF_PRINCIPLED':
+            sock = node.inputs.get("Alpha")
+            if sock is not None and sock.is_linked:
+                start = sock.links[0].from_socket
+            break
+    if start is None:
+        return None
+    stack = [start]
+    seen = 0
+    while stack and seen < max_nodes:
+        sock = stack.pop()
+        seen += 1
+        node = getattr(sock, "node", None)
+        if node is None:
+            continue
+        if node.type == 'TEX_IMAGE' and node.image is not None:
+            name = (sock.name or "").upper()
+            channel = {"R": 0, "G": 1, "B": 2}.get(name, 3)
+            return node.image, channel
+        for inp in node.inputs:
+            for link in inp.links:
+                stack.append(link.from_socket)
+    return None
+
+
+def _image_pixels(img, cache):
+    key = img.name
+    if key in cache:
+        return cache[key]
+    arr = None
+    try:
+        w, h = img.size
+        if w > 0 and h > 0:
+            buf = np.empty(w * h * 4, np.float32)
+            img.pixels.foreach_get(buf)
+            arr = buf.reshape(h, w, 4)
+    except Exception:  # noqa: BLE001 - unreadable images just disable the feature
+        arr = None
+    cache[key] = arr
+    return arr
+
+
+def _alpha_sampler(mat, image_cache):
+    """Return f(u, v) -> alpha (float) for a material, or None when not texture driven."""
+    src = _find_alpha_source(mat)
+    if src is None:
+        return None
+    img, channel = src
+
+    def _sample(u, v):
+        arr = _image_pixels(img, image_cache)
+        if arr is None:
+            return 1.0
+        h, w = arr.shape[:2]
+        xi = np.clip((u % 1.0) * w, 0, w - 1).astype(np.int32)
+        yi = np.clip((v % 1.0) * h, 0, h - 1).astype(np.int32)
+        return arr[yi, xi, channel]
+
+    return _sample
+
+
+def _uv_tri_centroids(me):
+    """Per-triangle UV centroid, or None when the mesh has no UV layer."""
+    if me.uv_layers.active is None:
+        return None
+    uv = me.uv_layers.active
+    uvarr = np.empty(len(me.loops) * 2, np.float32)
+    try:
+        uv.uv.foreach_get("vector", uvarr)
+    except Exception:  # noqa: BLE001 - older API
+        uv.data.foreach_get("uv", uvarr)
+    uvarr = uvarr.reshape(-1, 2)
+    loops = np.empty(len(me.loop_triangles) * 3, np.int32)
+    me.loop_triangles.foreach_get("loops", loops)
+    return uvarr[loops.reshape(-1, 3)].mean(axis=1)
+
+
+def _transparent_skip_mask(me, tri, tmat_local, samplers, threshold):
+    """Triangles whose alpha texture is (nearly) transparent at their UV centroid."""
+    if not samplers:
+        return None
+    uv = _uv_tri_centroids(me)
+    if uv is None:
+        return None
+    skip = np.zeros(tri.shape[0], bool)
+    for slot, sample in samplers.items():
+        if sample is None:
+            continue
+        sel = tmat_local == slot
+        if not sel.any():
+            continue
+        alpha = np.asarray(sample(uv[sel, 0], uv[sel, 1]), np.float32)
+        skip[sel] = alpha < threshold
+    return skip if skip.any() else None
+
+
+def extract(context, width, height, use_render_visibility=True, exclude=(), skip_shells=True,
+            skip_transparent=True, alpha_threshold=0.5):
     scene = context.scene
     depsgraph = context.evaluated_depsgraph_get()
 
@@ -82,118 +227,149 @@ def extract(context, width, height, use_render_visibility=True, exclude=()):
         raise LineForgeError("LineForge: the scene has no camera (set scene.camera or use the Render Line Art PNG operator)")
     cam_eval = cam.evaluated_get(depsgraph)
 
-    verts_chunks = []
-    tri_chunks = []
-    nrm_chunks = []
-    skip_chunks = []
-    mat_chunks = []
-    obj_chunks = []
-    mat_ids = {}
-    mat_names = []
-    mat_colors = []
-    obj_names = []
-    offset = 0
-
-    for ob in depsgraph.objects:
-        if ob.type != 'MESH':
-            continue
-        orig = ob.original
-        if use_render_visibility:
-            if orig.hide_render or not orig.visible_get():
-                continue
-        if exclude and any(pat in orig.name.casefold() for pat in exclude):
-            continue
-        ev = ob.evaluated_get(depsgraph)
+    restore = _hide_shell_modifiers(depsgraph) if skip_shells else []
+    if restore:
         try:
-            me = ev.to_mesh()
-        except Exception:  # noqa: BLE001 - broken modifiers must not kill the whole pass
-            continue
-        if me is None:
-            continue
-        try:
-            if len(me.polygons) == 0:
+            bpy.context.view_layer.update()
+        except Exception:  # noqa: BLE001 - background contexts may not need it
+            pass
+        depsgraph = context.evaluated_depsgraph_get()
+        cam_eval = cam.evaluated_get(depsgraph)
+
+    try:
+        verts_chunks = []
+        tri_chunks = []
+        nrm_chunks = []
+        skip_chunks = []
+        mat_chunks = []
+        obj_chunks = []
+        mat_ids = {}
+        mat_names = []
+        mat_colors = []
+        obj_names = []
+        offset = 0
+        image_cache = {}
+
+        for ob in depsgraph.objects:
+            if ob.type != 'MESH':
                 continue
-            me.calc_loop_triangles()
-            nt = len(me.loop_triangles)
-            if nt == 0:
+            orig = ob.original
+            if use_render_visibility:
+                if orig.hide_render or not orig.visible_get():
+                    continue
+            if exclude and any(pat in orig.name.casefold() for pat in exclude):
                 continue
+            ev = ob.evaluated_get(depsgraph)
+            try:
+                me = ev.to_mesh()
+            except Exception:  # noqa: BLE001 - broken modifiers must not kill the whole pass
+                continue
+            if me is None:
+                continue
+            try:
+                if len(me.polygons) == 0:
+                    continue
+                me.calc_loop_triangles()
+                nt = len(me.loop_triangles)
+                if nt == 0:
+                    continue
 
-            co = np.empty(len(me.vertices) * 3, np.float32)
-            me.vertices.foreach_get("co", co)
-            co = co.reshape(-1, 3).astype(np.float64)
+                co = np.empty(len(me.vertices) * 3, np.float32)
+                me.vertices.foreach_get("co", co)
+                co = co.reshape(-1, 3).astype(np.float64)
 
-            mw = _mat4_to_np(ev.matrix_world).astype(np.float64)
-            world = co @ mw[:3, :3].T + mw[:3, 3]
-            world32 = np.ascontiguousarray(world, np.float32)
+                mw = _mat4_to_np(ev.matrix_world).astype(np.float64)
+                world = co @ mw[:3, :3].T + mw[:3, 3]
+                world32 = np.ascontiguousarray(world, np.float32)
 
-            tri = np.empty(nt * 3, np.int32)
-            me.loop_triangles.foreach_get("vertices", tri)
-            tri = tri.reshape(-1, 3).astype(np.int32)
+                tri = np.empty(nt * 3, np.int32)
+                me.loop_triangles.foreach_get("vertices", tri)
+                tri = tri.reshape(-1, 3).astype(np.int32)
 
-            tpoly = np.empty(nt, np.int32)
-            me.loop_triangles.foreach_get("polygon_index", tpoly)
-            poly_mat = np.empty(len(me.polygons), np.int32)
-            me.polygons.foreach_get("material_index", poly_mat)
-            tmat_local = poly_mat[tpoly]
+                tpoly = np.empty(nt, np.int32)
+                me.loop_triangles.foreach_get("polygon_index", tpoly)
+                poly_mat = np.empty(len(me.polygons), np.int32)
+                me.polygons.foreach_get("material_index", poly_mat)
+                tmat_local = poly_mat[tpoly]
 
-            pn = np.empty(len(me.polygons) * 3, np.float32)
-            me.polygons.foreach_get("normal", pn)
-            pn = pn.reshape(-1, 3)
-            tn = pn[tpoly] @ _normal_matrix(mw).T
-            if float(np.linalg.det(mw[:3, :3])) < 0.0:  # mirrored object: normals flip with the transform
-                tn = -tn
-            lens = np.linalg.norm(tn, axis=1, keepdims=True)
-            lens[lens < 1e-9] = 1.0
-            tn = np.ascontiguousarray(tn / lens, np.float32)
+                pn = np.empty(len(me.polygons) * 3, np.float32)
+                me.polygons.foreach_get("normal", pn)
+                pn = pn.reshape(-1, 3)
+                tn = pn[tpoly] @ _normal_matrix(mw).T
+                if float(np.linalg.det(mw[:3, :3])) < 0.0:  # mirrored object: normals flip with the transform
+                    tn = -tn
+                lens = np.linalg.norm(tn, axis=1, keepdims=True)
+                lens[lens < 1e-9] = 1.0
+                tn = np.ascontiguousarray(tn / lens, np.float32)
 
-            # global material ids (union across objects)
-            local_to_global = np.empty(tmat_local.shape, np.int32)
-            local_skip = np.zeros_like(tmat_local, np.uint8)
-            for slot in np.unique(tmat_local):
-                key, mat = _material_key(ev, int(slot))
-                if _is_helper_material(key):
-                    local_skip[tmat_local == slot] = 1
-                gid = mat_ids.get(key)
-                if gid is None:
-                    gid = len(mat_names)
-                    mat_ids[key] = gid
-                    mat_names.append(key)
-                    col = (0.8, 0.8, 0.8, 1.0)
-                    if mat is not None:
-                        try:
-                            c = mat.diffuse_color
-                            col = (float(c[0]), float(c[1]), float(c[2]), float(c[3]))
-                        except Exception:
-                            pass
-                    mat_colors.append(col)
-                local_to_global[tmat_local == slot] = gid
+                # global material ids (union across objects)
+                local_to_global = np.empty(tmat_local.shape, np.int32)
+                local_skip = np.zeros_like(tmat_local, np.uint8)
+                for slot in np.unique(tmat_local):
+                    key, mat = _material_key(ev, int(slot))
+                    if _is_helper_material(key):
+                        local_skip[tmat_local == slot] = 1
+                    gid = mat_ids.get(key)
+                    if gid is None:
+                        gid = len(mat_names)
+                        mat_ids[key] = gid
+                        mat_names.append(key)
+                        col = (0.8, 0.8, 0.8, 1.0)
+                        if mat is not None:
+                            try:
+                                c = mat.diffuse_color
+                                col = (float(c[0]), float(c[1]), float(c[2]), float(c[3]))
+                            except Exception:
+                                pass
+                        mat_colors.append(col)
+                    local_to_global[tmat_local == slot] = gid
 
-            oid = len(obj_names)
-            obj_names.append(orig.name)
+                oid = len(obj_names)
+                obj_names.append(orig.name)
 
-            # degenerate / NaN triangles would produce garbage normals and stray lines
-            p0 = world[tri[:, 0]]
-            p1 = world[tri[:, 1]]
-            p2 = world[tri[:, 2]]
-            cross = np.cross(p1 - p0, p2 - p0)
-            area2 = np.linalg.norm(cross, axis=1)
-            bad = (area2 < 1e-12) | ~np.isfinite(area2) | ~np.isfinite(tn).all(axis=1)
-            if bad.any():
-                local_skip[bad] = 1
+                # degenerate / NaN triangles would produce garbage normals and stray lines
+                p0 = world[tri[:, 0]]
+                p1 = world[tri[:, 1]]
+                p2 = world[tri[:, 2]]
+                cross = np.cross(p1 - p0, p2 - p0)
+                area2 = np.linalg.norm(cross, axis=1)
+                bad = (area2 < 1e-12) | ~np.isfinite(area2) | ~np.isfinite(tn).all(axis=1)
+                if bad.any():
+                    local_skip[bad] = 1
 
-            verts_chunks.append(np.ascontiguousarray(world32 + np.float32(0)))
-            tri_chunks.append(tri + offset)
-            nrm_chunks.append(tn)
-            mat_chunks.append(np.ascontiguousarray(local_to_global, np.int32))
-            skip_chunks.append(np.ascontiguousarray(local_skip, np.uint8))
-            obj_chunks.append(np.full(nt, oid, np.int32))
-            offset += len(me.vertices)
-        finally:
-            ev.to_mesh_clear()
+                # see-through geometry (sheer overskirts, alpha-cutout cards) would add
+                # outlines the beauty render never shows
+                if skip_transparent:
+                    samplers = {}
+                    for slot in np.unique(tmat_local):
+                        key, mat = _material_key(ev, int(slot))
+                        samplers[int(slot)] = _alpha_sampler(mat, image_cache)
+                    tskip = _transparent_skip_mask(me, tri, tmat_local, samplers, alpha_threshold)
+                    if tskip is not None:
+                        local_skip[tskip] = 1
 
-    if not tri_chunks:
-        raise LineForgeError("LineForge: no renderable mesh geometry in the scene "
-                             "(check visibility and Exclude Objects)")
+                verts_chunks.append(np.ascontiguousarray(world32 + np.float32(0)))
+                tri_chunks.append(tri + offset)
+                nrm_chunks.append(tn)
+                mat_chunks.append(np.ascontiguousarray(local_to_global, np.int32))
+                skip_chunks.append(np.ascontiguousarray(local_skip, np.uint8))
+                obj_chunks.append(np.full(nt, oid, np.int32))
+                offset += len(me.vertices)
+            finally:
+                ev.to_mesh_clear()
+
+        if not tri_chunks:
+            raise LineForgeError("LineForge: no renderable mesh geometry in the scene "
+                                 "(check visibility and Exclude Objects)")
+    finally:
+        for mod, vp, rn in restore:
+            mod.show_viewport = vp
+            mod.show_render = rn
+        if restore:
+            try:
+                bpy.context.view_layer.update()
+            except Exception:  # noqa: BLE001 - scene state is already restored
+                pass
 
     verts = np.ascontiguousarray(np.concatenate(verts_chunks, axis=0), np.float32)
     tris = np.ascontiguousarray(np.concatenate(tri_chunks, axis=0), np.int32)

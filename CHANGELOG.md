@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.2.1 — 2026-11-22
+
+* **See-through faces are skipped.** For every material whose Principled *Alpha* is driven by an
+  image texture, the alpha is sampled at each triangle's UV centroid; triangles under
+  `Alpha Cutoff` (default 0.5) are dropped from the G-buffer *and* from the line pass. This removes
+  the "ghost cone" around semi-transparent garment layers: the VRM demo used to draw a ring
+  40–70 px outside the skirt silhouette because sheer cloth was rasterised as an opaque solid.
+  New settings: `Skip See-through Faces` (default on) and `Alpha Cutoff` (0…1).
+* **Outline shells are skipped.** Materials named like `outline` and `MToon Outline (...)` geometry
+  node modifiers are excluded while the depsgraph mesh is evaluated (`Skip Outline Shells`,
+  default on); modifiers are restored in a `finally:` block even when extraction raises.
+* **Fixed**: skipping a triangle used to turn its border into a "boundary" edge, which drew a fake
+  rim around every skipped face (zig-zag hem on the demo). Skipped neighbours no longer produce
+  boundary or silhouette lines (`src/core.cpp`).
+* Demo numbers at 1080p / 2× supersampling: 1516 polylines / 19,958 segments, core 0.50 s,
+  extract 1.98 s, total 2.48 s (was 2200 / 24,400, 1.28 s / 3.8 s before the transparent geometry
+  was filtered out). `docs/composite_1080p.png` regenerated.
+
 ## 0.2.0 — 2026-11-22
 
 * **Orthographic cameras now work.** The core used to treat clip-space `z` as the perspective

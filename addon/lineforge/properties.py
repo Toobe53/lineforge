@@ -48,6 +48,27 @@ class LFSceneProps(PropertyGroup):
         description="With an orthographic camera, scale world-space line widths by distance "
                     "instead of using one constant screen width (nearer geometry draws thicker)",
     )
+    skip_outline_shells: BoolProperty(
+        name="Skip Outline Shells",
+        default=True,
+        description="Temporarily disable outline-shell modifiers (e.g. VRM/MToon 'Outline' "
+                    "geometry nodes, inverted hulls) while extracting geometry, so their "
+                    "inflated shells do not add a second, larger outline to the line pass",
+    )
+    skip_transparent_faces: BoolProperty(
+        name="Skip See-through Faces",
+        default=True,
+        description="Leave out faces whose material alpha texture is transparent at the face "
+                    "center (sheer overskirts, alpha-cutout helper cards), which would "
+                    "otherwise add outlines the beauty render never shows",
+    )
+    alpha_threshold: FloatProperty(
+        name="Alpha Cutoff",
+        default=0.5,
+        min=0.0,
+        max=1.0,
+        description="Faces whose sampled material alpha is below this value are skipped",
+    )
 
     stats_text: StringProperty(name="Stats", default="")
     last_error: StringProperty(name="Last Error", default="")

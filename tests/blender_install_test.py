@@ -6,7 +6,10 @@ import traceback
 
 import bpy
 
-ZIP = r"C:\LineForge\dist\lineforge-0.1.0.zip"
+import glob
+
+ZIP = sorted(glob.glob(r"C:\LineForge\dist\lineforge-*.zip"),
+             key=lambda p: os.path.getmtime(p))[-1]
 OUT = r"C:\LineForge\build"
 
 
@@ -42,10 +45,10 @@ def main():
     img.save()
     print("PNG", os.path.exists(png), os.path.getsize(png) if os.path.exists(png) else 0)
 
-    bpy.ops.preferences.addon_disable(module="lineforge")
-    print("DISABLE OK")
-    bpy.ops.preferences.addon_remove(module="lineforge")
-    print("REMOVE OK")
+    # Leave the add-on installed and enabled (this mirrors what a user gets from
+    # Preferences > Add-ons), so the desk session keeps LineForge available.
+    bpy.ops.wm.save_userpref()
+    print("USERPREF SAVED")
     print("INSTALL TEST OK")
     return 0
 

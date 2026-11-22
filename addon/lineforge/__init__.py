@@ -3,7 +3,7 @@
 bl_info = {
     "name": "LineForge",
     "author": "LineForge contributors",
-    "version": (0, 2, 0),
+    "version": (0, 2, 1),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > LineForge",
     "description": "CPU line-art renderer: silhouette, crease, border, material and intersection lines",

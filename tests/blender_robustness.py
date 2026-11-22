@@ -35,7 +35,7 @@ def fresh_scene(with_camera=True):
 # 1. core status ------------------------------------------------------------
 info = renderer.core_info()
 assert info["available"], info
-assert info["version"] == "0.2.0", info
+assert info["version"] == renderer.ADDON_VERSION, info
 assert "bin" in info["path"].lower(), info
 print("CORE OK", info["version"], renderer.platform_tag())
 

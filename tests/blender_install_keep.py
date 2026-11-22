@@ -6,7 +6,10 @@ import traceback
 
 import bpy
 
-ZIP = r"C:\LineForge\dist\lineforge-0.2.0.zip"
+import glob
+
+ZIP = sorted(glob.glob(r"C:\LineForge\dist\lineforge-*.zip"),
+             key=lambda q: os.path.getmtime(q))[-1]
 ADDONS = bpy.utils.user_resource('SCRIPTS', path="addons")
 
 
@@ -31,7 +34,7 @@ def main():
 
     installed = os.path.join(ADDONS, "lineforge")
     print("INSTALLED_AT", installed, os.path.isdir(installed))
-    pyd = os.path.join(installed, "bin", "lineforge_core.pyd")
+    pyd = os.path.join(installed, "bin", renderer.platform_tag(), "lineforge_core.pyd")
     print("PYD", pyd, os.path.getsize(pyd) if os.path.exists(pyd) else -1)
     print("INSTALL KEEP OK")
 

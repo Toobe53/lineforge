@@ -232,7 +232,7 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
 
 PYBIND11_MODULE(lineforge_core, m) {
     m.doc() = "LineForge CPU line-rendering core";
-    m.attr("__version__") = "0.2.0";
+    m.attr("__version__") = "0.2.1";
     m.attr("LT_OBJECT") = int(lf::LT_OBJECT);
     m.attr("LT_CREASE") = int(lf::LT_CREASE);
     m.attr("LT_BOUNDARY") = int(lf::LT_BOUNDARY);

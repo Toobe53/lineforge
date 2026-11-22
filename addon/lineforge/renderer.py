@@ -13,7 +13,7 @@ from . import nodes as lfnodes
 from .errors import LineForgeError
 from .scene_extract import extract, scene_dict
 
-ADDON_VERSION = "0.2.0"
+ADDON_VERSION = "0.2.1"
 _CORE = None
 _CORE_INFO = {"available": False, "path": "", "version": "", "error": "not initialised"}
 _SUPPRESS_HANDLER = False
@@ -264,9 +264,13 @@ def _render_impl(context, scene, lf, sets, width, height):
     t0 = time.perf_counter()
     exclude = [s for s in getattr(scene.lf, "exclude_objects", "").split(",") if s.strip()]
     ss = max(1, min(4, int(getattr(scene.lf, "supersample", 1))))
+    skip_shells = bool(getattr(scene.lf, "skip_outline_shells", True))
+    skip_transparent = bool(getattr(scene.lf, "skip_transparent_faces", True))
+    alpha_threshold = float(getattr(scene.lf, "alpha_threshold", 0.5))
     rw = width * ss
     rh = height * ss
-    snap = extract(context, rw, rh, exclude=exclude)
+    snap = extract(context, rw, rh, exclude=exclude, skip_shells=skip_shells,
+                   skip_transparent=skip_transparent, alpha_threshold=alpha_threshold)
     accum = np.zeros((rh, rw, 4), np.float32)
     all_lines = []
     total_strokes = 0

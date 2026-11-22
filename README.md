@@ -30,7 +30,12 @@ compiled by the `build.yml` CI workflow.
   (display-space straight-alpha over), no compositor node group involved — the reliable way to
   get a finished image, including in background mode.
 * **Exclude Objects**: comma separated object name substrings left out of the pass, for helper shells and proxies.
-* Inverted-hull outline materials (names containing `outline`) are skipped automatically so they do not occlude the real surface.
+* **See-through faces are skipped** (`Skip See-through Faces`, `Alpha Cutoff`): a triangle whose material drives
+  Principled *Alpha* from an image is sampled at its UV centroid, and faces below the cutoff are left out of the
+  G-buffer and the line pass. Without it, sheer cloth, eyelash cards and garment layers that the render shows as
+  invisible would still be outlined as if they were opaque solids.
+* Inverted-hull outline materials (names containing `outline`) and `MToon Outline` geometry-node shells are skipped
+  automatically (`Skip Outline Shells`) so they do not occlude the real surface.
 * **Supersampling** (1-4x): the line pass is rasterised at N times the output size and box-filtered down, which removes staircase artefacts on thin or steep lines. Default 2; raise to 3-4 for stills, drop to 1 for fast viewport previews.
 * **Orthographic cameras** are supported (true clip-space `w` and view-space depth, not a perspective approximation).
   With ortho cameras, *Ortho Width Falloff* switches world-space widths from one constant screen
@@ -73,7 +78,7 @@ compiled by the `build.yml` CI workflow.
 
 `docs/line_pass_1080p.png` — line pass rendered by the native core from a real VRM scene
 (`C:\PencilPlus\vrm_pcl_line5.blend`: 70,794 triangles, 55 meshes, 1920×1080):
-≈2200 polylines / 24,000 segments in **~1.0–1.3 s** core time at supersampling 2 (≈3.2–3.8 s including depsgraph extraction).
+≈1500 polylines / 20,000 segments in **~0.5 s** core time at supersampling 2 (≈2.5 s including depsgraph extraction).
 
 `docs/composite_1080p.png` — the same pass alpha-over the EEVEE beauty render.
 
@@ -179,9 +184,9 @@ python3 tools/package.py --version 0.2.0      # override the bl_info version
   prefer rendering the pass to an image (`Render Line Pass` with *Save Pass*) and alpha-over it
   yourself — `tests/blender_demo_manual.py` shows the deterministic numpy composite.
 * Prebuilt binaries are Windows x64 only; Linux and macOS must build from source (`tools/build.py`).
-* A little extra silhouette can appear around double-layered garments (inner + outer cloth shell):
-  both layers are real geometry, so both are outlined. Filter the helper object with *Exclude Objects*
-  if the extra ring is not wanted.
+* Double-layered garments (inner + outer cloth shell) still outline both layers when both are opaque;
+  filter the helper object with *Exclude Objects* if the extra ring is not wanted. Semi-transparent
+  layers are handled by *Skip See-through Faces*.
 * Hidden lines are a translucent ghost of occluded strokes; they do not add occluded edges that
   were never emitted as line primitives (e.g. creases of a fully hidden part when crease is off).
 * Viewport overlay is camera-view only and draws the cached line pass (no incremental redraw).

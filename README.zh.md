@@ -15,6 +15,13 @@ Blender 5.2 的线稿渲染插件：C++ 原生内核（pybind11，CPU 光栅）+
 
 线稿支持超采样（1–4×，默认 2）：在 N 倍分辨率下光栅化后盒式降采样，消除细线与陡斜线的锯齿；静帧可调到 3–4，视口预览可降到 1。
 
+**跳过透明面**（`Skip See-through Faces` + `Alpha Cutoff`）：材质用贴图驱动 Principled *Alpha* 时，
+按三角形 UV 质心采样该 alpha，低于阈值的面不进入 G-buffer、也不出线。否则半透明薄纱、睫毛片、
+多层衣料在渲染里看不见，却会被当成不透明实体描出轮廓（VRM 裙子外那圈"鬼影锥"就是它）。
+
+**跳过描边壳**（`Skip Outline Shells`，默认开）：材质名含 `outline` 的反向壳，以及 `MToon Outline (...)`
+几何节点修改器生成的沿法线外推壳，都从提取时排除，避免遮挡真实表面。
+
 支持正交相机（用真实 clip 空间 w 与视图空间深度，不是透视近似）。正交相机下新增
 **Ortho Width Falloff** 开关：关闭时世界空间线宽折算成固定屏幕像素（平行投影语义），
 打开时保留 `focal / depth` 缩放，近处几何画得更粗。
@@ -25,7 +32,7 @@ MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一�
 
 ## 安装
 
-1. 用现成的包：`dist/lineforge-0.2.0.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
+1. 用现成的包：`dist/lineforge-0.2.1.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
 2. Blender → 编辑 › 偏好设置 › 插件 › 安装… → 选中该 zip → 勾选启用 **LineForge**。
 3. 本机已安装并启用（`%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\lineforge`）。
 4. 侧栏 **LineForge** 页签顶部显示内核状态；红色时点 *Check Native Core* 会显示平台标签与具体加载错误。
@@ -35,7 +42,7 @@ MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一�
 ```powershell
 pwsh -File C:\LineForge\tools\get-toolchain.ps1   # 首次：下载 w64devkit + CPython 3.13 头 + pybind11
 pwsh -File C:\LineForge\build.ps1                 # 编译 src/*.cpp → addon/lineforge/bin/win64/lineforge_core.pyd
-pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.2.0.zip
+pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.2.1.zip
 ```
 
 Linux / macOS 用跨平台脚本或 CMake 自行构建（无需 Blender）：
@@ -86,4 +93,4 @@ cmake -B build -DPython_EXECUTABLE=$(which python3) && cmake --build build
 ## 性能参考
 
 `vrm_pcl_line5.blend`（55 网格 / 70,794 三角 / 116,144 边）在 1920×1080、4 个线集下：
-约 2200 条折线、24,000 段；超采样 2 下内核 **1.0–1.3 s**，含 depsgraph 提取约 3.2–3.8 s；超采样 1 时约 0.28 / 0.83 s。
+约 1500 条折线、20,000 段；超采样 2 下内核 **约 0.5 s**，含 depsgraph 提取约 2.5 s。

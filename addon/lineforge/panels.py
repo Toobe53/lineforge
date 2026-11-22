@@ -74,6 +74,10 @@ class LF_PT_main(bpy.types.Panel):
         col.prop(lf, "intersection_tol")
         col.prop(lf, "seed")
         col.prop(lf, "exclude_objects")
+        col.prop(lf, "skip_outline_shells")
+        col.prop(lf, "skip_transparent_faces")
+        if lf.skip_transparent_faces:
+            col.prop(lf, "alpha_threshold")
         if lf.last_error:
             err = layout.box()
             err.label(text="Last Error", icon='ERROR')
