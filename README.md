@@ -137,8 +137,8 @@ addon/lineforge/        Blender add-on (Python)
 src/                    C++ core (core.hpp, core.cpp) + pybind11 bindings (module.cpp)
 tests/                  headless test scripts: smoke_core, test_style (taper/brush/random/fade/
                         hidden), test_overlay, blender_addon_test, blender_scene_pass,
-                        blender_composite_op, blender_aa_test, blender_robustness,
-                        blender_install_test
+                        blender_composite_op, blender_aa_test, blender_ortho_test,
+                        blender_transparent_test, blender_robustness, blender_install_test
 tools/get-toolchain.ps1 portable toolchain bootstrap (Windows)
 tools/build.py          cross-platform core build (Python 3 + any C++17 compiler or MSVC)
 CMakeLists.txt          alternative CMake build with pybind11

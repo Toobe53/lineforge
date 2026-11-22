@@ -17,6 +17,9 @@
 * Demo numbers at 1080p / 2× supersampling: 1516 polylines / 19,958 segments, core 0.50 s,
   extract 1.98 s, total 2.48 s (was 2200 / 24,400, 1.28 s / 3.8 s before the transparent geometry
   was filtered out). `docs/composite_1080p.png` regenerated.
+* New `tests/blender_transparent_test.py`: a 0.05-alpha cube is dropped from the G-buffer and the
+  line pass (1 line vs 2 with the toggle off), while a 0.7-alpha cube above the 0.5 cutoff stays
+  in (`SKIPPED_TRIS 12 of 36`).
 
 ## 0.2.0 — 2026-11-22
 
