@@ -5,7 +5,13 @@ Blender 5.2 的线稿渲染插件：C++ 原生内核（pybind11，CPU 光栅）+
 
 线稿支持超采样（1–4×，默认 2）：在 N 倍分辨率下光栅化后盒式降采样，消除细线与陡斜线的锯齿；静帧可调到 3–4，视口预览可降到 1。
 
-支持正交相机（用真实 clip 空间 w 与视图空间深度，不是透视近似）。
+支持正交相机（用真实 clip 空间 w 与视图空间深度，不是透视近似）。正交相机下新增
+**Ortho Width Falloff** 开关：关闭时世界空间线宽折算成固定屏幕像素（平行投影语义），
+打开时保留 `focal / depth` 缩放，近处几何画得更粗。
+
+构建与打包：Windows 用 `build.ps1` / `package.ps1`；跨平台用 `tools/build.py`（支持 g++/clang++/
+MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一个 zip）。
+`.github/workflows/build.yml` 在 Ubuntu/Windows/macOS 三平台编译内核并合成单 zip，打 `v*` tag 时自动发 release。
 
 ## 安装
 

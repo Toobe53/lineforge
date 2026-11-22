@@ -8,6 +8,15 @@
   view-space depth (optional `view` matrix in the scene dict; the old behaviour is kept when it is
   absent). Verified against `world_to_camera_view` (identical pixel coordinates) and by
   `tests/blender_robustness.py` (ortho cube yields its 6 silhouette strokes).
+* New scene setting **Ortho Width Falloff** (shown while the scene camera is orthographic):
+  off = world-space widths become one constant screen width (parallel projection semantics);
+  on = widths keep the `focal / depth` scaling, so nearer geometry draws thicker lines.
+  Covered by `tests/blender_ortho_test.py` (constant spread 1.00 vs. falloff spread 2.14 on a
+  near/far cube pair).
+* **CI**: `.github/workflows/build.yml` builds the core on Ubuntu, Windows (MSVC via vswhere) and
+  macOS, merges the three platform binaries into one add-on zip, and attaches it to a GitHub
+  release when a `v*` tag is pushed. `tools/package.py` is the single cross-platform packager
+  (`package.ps1` now calls it), and `tools/build.py` gained MSVC support.
 * **Errors are UI messages, not tracebacks.** New `lineforge.errors.LineForgeError`; every operator
   reports it in the status bar and in the *Last Error* panel box, and returns `CANCELLED`.
 * **Core status + Check Native Core.** The sidebar shows whether the native module is loaded, from

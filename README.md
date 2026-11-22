@@ -18,6 +18,8 @@ beauty render — entirely inside the Blender process, no external render app.
 * Inverted-hull outline materials (names containing `outline`) are skipped automatically so they do not occlude the real surface.
 * **Supersampling** (1-4x): the line pass is rasterised at N times the output size and box-filtered down, which removes staircase artefacts on thin or steep lines. Default 2; raise to 3-4 for stills, drop to 1 for fast viewport previews.
 * **Orthographic cameras** are supported (true clip-space `w` and view-space depth, not a perspective approximation).
+  With ortho cameras, *Ortho Width Falloff* switches world-space widths from one constant screen
+  width to distance-scaled widths (nearer geometry draws thicker), matching the perspective look.
 * **Failures are messages, not tracebacks**: geometry/camera/core problems raise `LineForgeError`, which the operators report in the status bar and in the *Last Error* box; *Check Native Core* reports the loaded binary, its platform tag and the exact load error.
 * **Portable build**: one zip contains `bin/<platform_tag>/lineforge_core.<ext>`; the loader picks the tag for the running Blender and lists the platform + fix in the error if no binary matches. Prebuilt binaries ship for Windows x64; Linux/macOS build from source with `tools/build.py` or CMake.
 * Licence: **GPL-2.0-or-later**.
@@ -143,6 +145,18 @@ cmake -B build -DPython_EXECUTABLE=$(which python3) && cmake --build build
 
 `tools/build.py` accepts `--cxx`, `--python-home`, `--pybind11`, `--clean`, `--debug`, `--no-copy`;
 it never needs Blender and copies the result to `addon/lineforge/bin/<platform_tag>/`.
+On Windows it uses `g++`/`clang++` when available and otherwise the Visual Studio toolset through
+`vswhere`/`vcvars64.bat`.
+
+Packaging is done by `tools/package.py` (stdlib only, same archive on Windows, Linux, macOS and CI):
+
+```bash
+python3 tools/package.py                      # dist/lineforge-<version>.zip
+python3 tools/package.py --version 0.2.0      # override the bl_info version
+```
+
+`.github/workflows/build.yml` builds the core on Ubuntu, Windows and macOS, merges the three
+`bin/<tag>/` binaries into one zip and publishes it as a release asset for `v*` tags.
 
 ## Limitations / roadmap
 

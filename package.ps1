@@ -1,38 +1,25 @@
 # LineForge — package the add-on as an installable Blender zip.
-# GPL-2.0-or-later.
+# Thin Windows wrapper around tools/package.py so local builds and CI produce the
+# exact same archive. GPL-2.0-or-later.
 [CmdletBinding()]
 param(
-    [string]$Version = '0.2.0'
+    [string]$Version = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
-$addon = Join-Path $root 'addon\lineforge'
-$dist = Join-Path $root 'dist'
-$pyd = Join-Path $addon 'bin\win64\lineforge_core.pyd'
+$args_list = @((Join-Path $root 'tools\package.py'))
+if ($Version) { $args_list += @('--version', $Version) }
 
-if (-not (Test-Path $pyd)) { throw "missing $pyd - run build.ps1 first" }
-New-Item -ItemType Directory -Force -Path $dist | Out-Null
-
-$stage = Join-Path $env:TEMP ("lineforge-pkg-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
-New-Item -ItemType Directory -Force -Path $stage | Out-Null
-try {
-    Copy-Item $addon (Join-Path $stage 'lineforge') -Recurse -Force
-    Get-ChildItem (Join-Path $stage 'lineforge') -Recurse -Include '__pycache__' -Directory -ErrorAction SilentlyContinue |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Copy-Item (Join-Path $root 'LICENSE') (Join-Path $stage 'lineforge\LICENSE') -Force
-    Copy-Item (Join-Path $root 'README.md') (Join-Path $stage 'lineforge\README.md') -Force
-    if (Test-Path (Join-Path $root 'README.zh.md')) {
-        Copy-Item (Join-Path $root 'README.zh.md') (Join-Path $stage 'lineforge\README.zh.md') -Force
-    }
-    if (Test-Path (Join-Path $root 'CHANGELOG.md')) {
-        Copy-Item (Join-Path $root 'CHANGELOG.md') (Join-Path $stage 'lineforge\CHANGELOG.md') -Force
-    }
-
-    $zip = Join-Path $dist "lineforge-$Version.zip"
-    if (Test-Path $zip) { Remove-Item $zip -Force }
-    Compress-Archive -Path (Join-Path $stage 'lineforge') -DestinationPath $zip -CompressionLevel Optimal
-    Write-Host ("packaged: {0} ({1:N0} bytes)" -f $zip, (Get-Item $zip).Length) -ForegroundColor Green
-} finally {
-    if (Test-Path $stage) { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
+$candidates = @(
+    (Join-Path $root 'toolchain\py313\tools\python.exe'),
+    (Join-Path ${env:ProgramFiles} 'Blender Foundation\Blender 5.2\5.2\python\bin\python.exe')
+)
+$python = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $python) {
+    $python = (Get-Command python -ErrorAction SilentlyContinue).Source
 }
+if (-not $python) { throw 'no python found (toolchain\py313 or Blender 5.2 python or PATH)' }
+
+& $python @args_list
+if ($LASTEXITCODE -ne 0) { throw "packaging failed (exit $LASTEXITCODE)" }
