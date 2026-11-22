@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.4.0 — 2026-11-22
+
+* **AOV / multi-pass output.** `Result` grows `hidden_image` (only the occluded part of every stroke,
+  premultiplied RGBA) and `depth_image` (one float per pixel, view-space distance, 0 where nothing was
+  hit), plus `raster_ms` / `stroke_ms` / `composite_ms` timings. `Passes (AOV)` exposes `Hidden Pass` and
+  `Depth Pass`; `lf.save_passes` writes `<base>_lines.png`, `<base>_hidden.png`, `<base>_depth.exr` and
+  `LineForge Hidden` / `LineForge Depth` datablocks are kept for compositor work.
+  Covered by `tests/blender_passes_test.py`.
+* **Image brush textures.** A line set can drive its width profile from any loaded image
+  (`texture_image`, `texture_channel` LUMA/ALPHA/RED/GREEN/BLUE, `texture_invert`, `texture_amp`,
+  `texture_repeat`). `_image_profile()` resamples it to a 256-tap profile with a fingerprint cache, so a
+  scanned pencil strip works exactly like the procedural presets. Covered by
+  `tests/blender_brush_image_test.py`.
+* **Backface culling for the depth pass** (`Backface Culling`: Off / Cull Back / Cull Front, default
+  Cull Back). Edge detection never looks at the G-buffer culling decision, so the line output is
+  unchanged; on the VRM demo only 200 of 2.07M pixels lose their surface. Depth pass at 1080p:
+  331 → 230 ms. Covered by `tests/blender_cull_test.py`.
+* **Faster native core.** The triangle rasteriser now runs a 4-pixel SSE2 batch (edge functions,
+  cross products, reciprocal by `_mm_div_ps`, lane masks via `_mm_movemask_ps`) with a scalar tail, and
+  the compositor/debug AOVs only walk the dirty rectangle touched by rasterisation or strokes.
+  Together with culling: 1080p demo 175 → 118 ms core at supersampling 1 and 503 → 399 ms at 2
+  (raster 117 → 70 / 331 → 230 ms).
+
 ## 0.3.0 — 2026-11-22
 
 * **Transparent-face detection is coverage based.** Each triangle is sampled at seven barycentric

@@ -9,6 +9,13 @@
 #include <random>
 #include <unordered_map>
 
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#include <emmintrin.h>
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -20,6 +27,16 @@ constexpr float kInf = std::numeric_limits<float>::infinity();
 
 inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
 inline float smoothstepf(float t) { t = clampf(t, 0.f, 1.f); return t * t * (3.f - 2.f * t); }
+
+inline int ctz32(unsigned v) {
+#if defined(_MSC_VER)
+    unsigned long idx = 0;
+    _BitScanForward(&idx, v);
+    return int(idx);
+#else
+    return __builtin_ctz(v);
+#endif
+}
 
 struct ProjVert {
     float x = 0.f, y = 0.f, d = 0.f;
@@ -50,7 +67,15 @@ public:
         return uint16_t(palette_.size() - 1);
     }
 
-    void raster_tris(const std::vector<ProjVert>& pv, const SceneView& sv) {
+    // Dirty rectangle: compositing only walks the pixels some pass actually wrote.
+    void touch(int x0, int y0, int x1, int y1) {
+        if (x0 < bx0_) bx0_ = x0;
+        if (y0 < by0_) by0_ = y0;
+        if (x1 > bx1_) bx1_ = x1;
+        if (y1 > by1_) by1_ = y1;
+    }
+
+    void raster_tris(const std::vector<ProjVert>& pv, const SceneView& sv, int cull) {
         for (int i = 0; i < sv.ntris; ++i) {
             // Helper geometry (outline hulls, transparent guides) is flagged by the
             // extractor and must not take part in the G-buffer at all.
@@ -68,16 +93,82 @@ public:
             const int iy0 = std::max(0, int(std::floor(miny)));
             const int iy1 = std::min(h_ - 1, int(std::ceil(maxy)));
             if (ix1 < ix0 || iy1 < iy0) continue;
+            touch(ix0, iy0, ix1, iy1);
             const float area = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
             if (std::fabs(area) < 1e-9f) continue;
+            if (cull) {
+                // Screen y points down, so a triangle whose normal faces the camera
+                // winds clockwise on screen. cull == 1 keeps that sign, cull == 2 the
+                // opposite one (for meshes authored with reversed winding).
+                const bool faces_camera = cull == 1 ? area > 0.f : area < 0.f;
+                if (!faces_camera) continue;
+            }
             const float inv = 1.f / area;
             const int oid = sv.tri_obj ? sv.tri_obj[i] : 0;
+            const float ia = 1.f / std::max(1e-4f, A.d);
+            const float ib = 1.f / std::max(1e-4f, B.d);
+            const float ic = 1.f / std::max(1e-4f, C.d);
             for (int y = iy0; y <= iy1; ++y) {
                 const float py = y + 0.5f;
                 float* drow = depth_.data() + size_t(y) * w_;
                 int32_t* frow = faceid_.data() + size_t(y) * w_;
                 int32_t* orow = objid_.data() + size_t(y) * w_;
-                for (int x = ix0; x <= ix1; ++x) {
+                int x = ix0;
+#if defined(__SSE2__)
+                // Four pixels per step: the edge functions are plain affine
+                // functions of px, so the whole inner loop maps onto SSE2 with two
+                // multiplies and one add per edge. Only the final depth compare and
+                // the (rare) id stores stay scalar, driven by a lane mask.
+                const __m128 vinv = _mm_set1_ps(inv);
+                const __m128 veps = _mm_set1_ps(-1e-5f);
+                const __m128 vone = _mm_set1_ps(1.f);
+                const __m128 vx0 = _mm_set1_ps(x0);
+                const __m128 vx1 = _mm_set1_ps(x1);
+                const __m128 vx2 = _mm_set1_ps(x2);
+                const __m128 kx1 = _mm_set1_ps(y2 - py);
+                const __m128 kx2 = _mm_set1_ps(y1 - py);
+                const __m128 ky0 = _mm_set1_ps(y0 - py);
+                const __m128 ky2 = _mm_set1_ps(y2 - py);
+                const __m128 via = _mm_set1_ps(ia);
+                const __m128 vib = _mm_set1_ps(ib);
+                const __m128 vic = _mm_set1_ps(ic);
+                for (; x + 3 <= ix1; x += 4) {
+                    const float b0 = float(x) + 0.5f;
+                    const __m128 vpx = _mm_set_ps(b0 + 3.f, b0 + 2.f, b0 + 1.f, b0);
+                    const __m128 w0 = _mm_mul_ps(
+                        _mm_sub_ps(_mm_mul_ps(_mm_sub_ps(vx1, vpx), kx1),
+                                   _mm_mul_ps(_mm_sub_ps(vx2, vpx), kx2)),
+                        vinv);
+                    const __m128 w1 = _mm_mul_ps(
+                        _mm_sub_ps(_mm_mul_ps(_mm_sub_ps(vx2, vpx), ky0),
+                                   _mm_mul_ps(_mm_sub_ps(vx0, vpx), ky2)),
+                        vinv);
+                    const __m128 w2 = _mm_sub_ps(_mm_sub_ps(vone, w0), w1);
+                    __m128 mask = _mm_and_ps(_mm_cmpge_ps(w0, veps), _mm_cmpge_ps(w1, veps));
+                    mask = _mm_and_ps(mask, _mm_cmpge_ps(w2, veps));
+                    if (_mm_movemask_ps(mask) == 0) continue;
+                    const __m128 iw = _mm_add_ps(
+                        _mm_add_ps(_mm_mul_ps(w0, via), _mm_mul_ps(w1, vib)),
+                        _mm_mul_ps(w2, vic));
+                    mask = _mm_and_ps(mask, _mm_cmpgt_ps(iw, _mm_set1_ps(1e-8f)));
+                    int lanes = _mm_movemask_ps(mask);
+                    if (lanes == 0) continue;
+                    const __m128 vd = _mm_div_ps(vone, iw);
+                    float dd[4];
+                    _mm_storeu_ps(dd, vd);
+                    while (lanes) {
+                        const int lane = ctz32(unsigned(lanes));
+                        lanes &= lanes - 1;
+                        const int px_i = x + lane;
+                        if (dd[lane] < drow[px_i]) {
+                            drow[px_i] = dd[lane];
+                            frow[px_i] = i;
+                            orow[px_i] = oid;
+                        }
+                    }
+                }
+#endif
+                for (; x <= ix1; ++x) {
                     const float px = x + 0.5f;
                     const float w0 = ((x1 - px) * (y2 - py) - (x2 - px) * (y1 - py)) * inv;
                     if (w0 < -1e-5f) continue;
@@ -85,8 +176,7 @@ public:
                     if (w1 < -1e-5f) continue;
                     const float w2 = 1.f - w0 - w1;
                     if (w2 < -1e-5f) continue;
-                    const float iw = w0 / std::max(1e-4f, A.d) + w1 / std::max(1e-4f, B.d) +
-                                     w2 / std::max(1e-4f, C.d);
+                    const float iw = w0 * ia + w1 * ib + w2 * ic;
                     if (iw <= 1e-8f) continue;
                     const float d = 1.f / iw;
                     if (d < drow[x]) {
@@ -108,6 +198,7 @@ public:
         const int iy0 = std::max(0, int(std::floor(std::min(a.y, b.y) - wmax)));
         const int iy1 = std::min(h_ - 1, int(std::ceil(std::max(a.y, b.y) + wmax)));
         if (ix1 < ix0 || iy1 < iy0) return;
+        touch(ix0, iy0, ix1, iy1);
         const float vx = b.x - a.x, vy = b.y - a.y;
         const float L2 = vx * vx + vy * vy;
         const float invL2 = L2 > 1e-8f ? 1.f / L2 : 0.f;
@@ -154,43 +245,82 @@ public:
 
     void composite(std::vector<float>& image) const {
         image.assign(size_t(w_) * h_ * 4, 0.f);
-        for (size_t i = 0; i < cov_.size(); ++i) {
-            float hr = 0.f, hg = 0.f, hb = 0.f, ha = 0.f;
-            const float ch = covh_[i];
-            if (ch > 0.f) {
-                const Rgba& hc = palette_[palh_[i]];
-                ha = ch * hc.a;
-                hr = hc.r * ha;
-                hg = hc.g * ha;
-                hb = hc.b * ha;
-            }
-            const float c = cov_[i];
-            if (c <= 0.f) {
-                if (ha > 0.f) {
-                    image[i * 4 + 0] = hr;
-                    image[i * 4 + 1] = hg;
-                    image[i * 4 + 2] = hb;
-                    image[i * 4 + 3] = ha;
+        if (bx1_ < bx0_ || by1_ < by0_) return;
+        for (int y = by0_; y <= by1_; ++y) {
+            for (int x = bx0_; x <= bx1_; ++x) {
+                const size_t i = size_t(y) * w_ + x;
+                float hr = 0.f, hg = 0.f, hb = 0.f, ha = 0.f;
+                const float ch = covh_[i];
+                if (ch > 0.f) {
+                    const Rgba& hc = palette_[palh_[i]];
+                    ha = ch * hc.a;
+                    hr = hc.r * ha;
+                    hg = hc.g * ha;
+                    hb = hc.b * ha;
                 }
-                continue;
+                const float c = cov_[i];
+                if (c <= 0.f) {
+                    if (ha > 0.f) {
+                        image[i * 4 + 0] = hr;
+                        image[i * 4 + 1] = hg;
+                        image[i * 4 + 2] = hb;
+                        image[i * 4 + 3] = ha;
+                    }
+                    continue;
+                }
+                const Rgba& col = palette_[pal_[i]];
+                const float a = c * col.a;
+                const float t = 1.f - a;
+                image[i * 4 + 0] = col.r * a + hr * t;
+                image[i * 4 + 1] = col.g * a + hg * t;
+                image[i * 4 + 2] = col.b * a + hb * t;
+                image[i * 4 + 3] = a + ha * t;
             }
-            const Rgba& col = palette_[pal_[i]];
-            const float a = c * col.a;
-            const float inv = 1.f - a;
-            image[i * 4 + 0] = col.r * a + hr * inv;
-            image[i * 4 + 1] = col.g * a + hg * inv;
-            image[i * 4 + 2] = col.b * a + hb * inv;
-            image[i * 4 + 3] = a + ha * inv;
         }
     }
 
     int width() const { return w_; }
     int height() const { return h_; }
     const std::vector<float>& depth() const { return depth_; }
+
+    // Hidden-stroke AOV: the occluded part of every stroke on its own, with the
+    // same premultiplied convention as composite().
+    void composite_hidden(std::vector<float>& image) const {
+        image.assign(size_t(w_) * h_ * 4, 0.f);
+        if (bx1_ < bx0_ || by1_ < by0_) return;
+        for (int y = by0_; y <= by1_; ++y) {
+            for (int x = bx0_; x <= bx1_; ++x) {
+                const size_t i = size_t(y) * w_ + x;
+                const float ch = covh_[i];
+                if (ch <= 0.f) continue;
+                const Rgba& hc = palette_[palh_[i]];
+                const float a = ch * hc.a;
+                image[i * 4 + 0] = hc.r * a;
+                image[i * 4 + 1] = hc.g * a;
+                image[i * 4 + 2] = hc.b * a;
+                image[i * 4 + 3] = a;
+            }
+        }
+    }
+
+    // Depth AOV: one float per pixel, view-space depth, 0 where nothing was hit.
+    void write_depth(std::vector<float>& image) const {
+        image.assign(size_t(w_) * h_, 0.f);
+        if (bx1_ < bx0_ || by1_ < by0_) return;
+        for (int y = by0_; y <= by1_; ++y) {
+            const float* drow = depth_.data() + size_t(y) * w_;
+            float* orow = image.data() + size_t(y) * w_;
+            for (int x = bx0_; x <= bx1_; ++x) {
+                const float d = drow[x];
+                orow[x] = std::isfinite(d) && d > 0.f ? d : 0.f;
+            }
+        }
+    }
     const std::vector<int32_t>& objid() const { return objid_; }
 
 private:
     int w_, h_;
+    int bx0_ = 0, by0_ = 0, bx1_ = -1, by1_ = -1;
     std::vector<float> depth_;
     std::vector<int32_t> faceid_;
     std::vector<int32_t> objid_;
@@ -333,7 +463,8 @@ Result render(const SceneView& sv, const Settings& S) {
         p.ok = true;
     }
 
-    canvas.raster_tris(pv, sv);
+    canvas.raster_tris(pv, sv, S.cull_backfaces);
+    const auto t_raster = std::chrono::high_resolution_clock::now();
 
     const float focal = 0.5f * float(S.height) * std::fabs(sv.proj.m[5] > 0.f ? sv.proj.m[5] : 1.f);
     const float bias = std::max(1e-5f, S.depth_bias);
@@ -481,7 +612,8 @@ Result render(const SceneView& sv, const Settings& S) {
         }
 
         const uint16_t pal = canvas.add_color(pl.color);
-        const bool hidden = S.hidden_lines && S.hidden_alpha > 0.f && S.hidden_width > 0.f;
+        const bool hidden =
+            (S.hidden_lines || S.want_hidden_image) && S.hidden_alpha > 0.f && S.hidden_width > 0.f;
         uint16_t pal_hidden = 0;
         if (hidden) {
             Rgba hc = pl.color;
@@ -726,7 +858,8 @@ Result render(const SceneView& sv, const Settings& S) {
     // Hair strands: explicit polylines with a world-space radius per point.
     if (S.draw_strands && sv.strand_pts && sv.strand_offsets && sv.nstrands > 0) {
         const uint16_t pal = canvas.add_color(S.strand_color);
-        const bool hidden = S.hidden_lines && S.hidden_alpha > 0.f && S.hidden_width > 0.f;
+        const bool hidden =
+            (S.hidden_lines || S.want_hidden_image) && S.hidden_alpha > 0.f && S.hidden_width > 0.f;
         uint16_t pal_hidden = 0;
         if (hidden) {
             Rgba hc = S.strand_color;
@@ -779,9 +912,22 @@ Result render(const SceneView& sv, const Settings& S) {
         }
     }
 
-    if (S.want_image) canvas.composite(out.image);
-    const auto t_end = std::chrono::high_resolution_clock::now();
-    out.time_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    if (S.want_image || S.want_hidden_image) {
+        const auto t_strokes = std::chrono::high_resolution_clock::now();
+        out.stroke_ms = std::chrono::duration<double, std::milli>(t_strokes - t_raster).count();
+        out.raster_ms = std::chrono::duration<double, std::milli>(t_raster - t_start).count();
+        if (S.want_image) canvas.composite(out.image);
+        if (S.want_hidden_image) canvas.composite_hidden(out.hidden_image);
+        const auto t_comp = std::chrono::high_resolution_clock::now();
+        out.composite_ms = std::chrono::duration<double, std::milli>(t_comp - t_strokes).count();
+        out.time_ms = std::chrono::duration<double, std::milli>(t_comp - t_start).count();
+    } else {
+        const auto t_end = std::chrono::high_resolution_clock::now();
+        out.stroke_ms = std::chrono::duration<double, std::milli>(t_end - t_raster).count();
+        out.raster_ms = std::chrono::duration<double, std::milli>(t_raster - t_start).count();
+        out.time_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    }
+    if (S.want_depth) canvas.write_depth(out.depth_image);
     return out;
 }
 

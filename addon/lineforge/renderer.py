@@ -14,7 +14,7 @@ from . import nodes as lfnodes
 from .errors import LineForgeError
 from .scene_extract import extract, scene_dict
 
-ADDON_VERSION = "0.3.0"
+ADDON_VERSION = "0.4.0"
 _CORE = None
 _CORE_INFO = {"available": False, "path": "", "version": "", "error": "not initialised"}
 _SUPPRESS_HANDLER = False
@@ -124,6 +124,21 @@ def last_render_id():
     return int(_LAST.get("render_id", 0))
 
 
+def last_hidden():
+    """Hidden-stroke AOV of the last render (H, W, 4 premultiplied) or None."""
+    return _LAST.get("hidden")
+
+
+def last_depth():
+    """Depth AOV of the last render (H, W float view depth, 0 = background) or None."""
+    return _LAST.get("depth")
+
+
+def last_passes():
+    """Files written by the last save_passes() call."""
+    return list(_LAST.get("passes", []))
+
+
 # -------------------------------------------------------------- settings ---
 
 def _style_from_node(node, scene, scale):
@@ -194,6 +209,8 @@ def build_settings(snap, node, scene, width, height, scale_mul=1.0):
         "hidden_lines": bool(lf.hidden_lines),
         "hidden_alpha": float(lf.hidden_alpha),
         "hidden_width": float(lf.hidden_width),
+        "cull_backfaces": {"OFF": 0, "BACK": 2, "FRONT": 1}.get(
+            str(getattr(lf, "cull_backfaces", "BACK")), 2),
         # Hair strands follow the object-outline pass so they are never drawn twice.
         "draw_strands": bool(getattr(lf, "hair_lines", True)) and str(node.line_type) == 'OBJECT',
         "strand_width_scale": float(getattr(lf, "hair_width", 1.0)),
@@ -201,14 +218,99 @@ def build_settings(snap, node, scene, width, height, scale_mul=1.0):
         "strand_color": list(styles[idx].get("color", [0.0, 0.0, 0.0, 1.0])),
         "styles": styles,
         "brush": {
-            "profile": lfnodes.brush_profile(node.brush_preset),
-            "repeat": float(node.brush_repeat),
-            "width_amp": float(node.brush_width_amp),
+            "profile": _brush_profile(node),
+            "repeat": float(getattr(node, "texture_repeat", node.brush_repeat)),
+            "width_amp": _brush_width_amp(node),
             "alpha_amp": float(node.brush_alpha_amp),
             "offset_random": float(node.brush_offset_random),
         },
     }
     return settings
+
+
+# ------------------------------------------------------- brush textures ---
+
+_PROFILE_CACHE = {}
+
+
+def _image_fingerprint(img):
+    """Cheap identity of an image's pixels (size + a few sampled values)."""
+    w, h = int(img.size[0]), int(img.size[1])
+    if w <= 0 or h <= 0:
+        return (img.name, w, h)
+    px = img.pixels
+    n = w * h * 4
+    samples = []
+    for k in range(8):
+        idx = (k * 7919 * 4) % n
+        try:
+            samples.append(round(float(px[idx]), 4))
+        except Exception:  # noqa: BLE001
+            break
+    return (img.name, w, h, tuple(samples))
+
+
+def _image_profile(img, channel='LUMA', invert=False, samples=256):
+    """Collapse an image into a 1-D stroke profile (0..1 width multipliers)."""
+    key = (_image_fingerprint(img), channel, bool(invert), int(samples))
+    cached = _PROFILE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    w, h = int(img.size[0]), int(img.size[1])
+    if w <= 0 or h <= 0:
+        return []
+    buf = np.empty(w * h * 4, np.float32)
+    try:
+        img.pixels.foreach_get(buf)
+    except Exception:  # noqa: BLE001 - packed/generated images still expose foreach_get
+        return []
+    pix = buf.reshape(h, w, 4)
+    if channel == 'ALPHA':
+        data = pix[..., 3]
+    elif channel == 'RED':
+        data = pix[..., 0]
+    elif channel == 'GREEN':
+        data = pix[..., 1]
+    elif channel == 'BLUE':
+        data = pix[..., 2]
+    else:  # luminance
+        data = pix[..., :3].mean(axis=2)
+    # Average over rows, then box-reduce the columns to `samples`.
+    column = data.mean(axis=0)
+    n = max(1, min(int(samples), w))
+    edges = np.linspace(0, w, n + 1).astype(np.int64)
+    profile = []
+    for i in range(n):
+        i0, i1 = edges[i], max(edges[i] + 1, edges[i + 1])
+        profile.append(float(column[i0:i1].mean()))
+    lo, hi = min(profile), max(profile)
+    span = hi - lo
+    if span > 1e-5:
+        profile = [(v - lo) / span for v in profile]
+    else:
+        profile = [1.0] * n
+    if invert:
+        profile = [1.0 - v for v in profile]
+    # A profile of zeros would erase the line; keep a visible floor.
+    profile = [max(0.05, v) for v in profile]
+    _PROFILE_CACHE[key] = profile
+    return profile
+
+
+def _brush_profile(node):
+    img = getattr(node, "texture_image", None)
+    if img is not None:
+        prof = _image_profile(img, getattr(node, "texture_channel", 'LUMA'),
+                              bool(getattr(node, "texture_invert", False)))
+        if prof:
+            return prof
+    return lfnodes.brush_profile(node.brush_preset)
+
+
+def _brush_width_amp(node):
+    if getattr(node, "texture_image", None) is not None:
+        return float(getattr(node, "texture_amp", 0.6))
+    return float(node.brush_width_amp)
 
 
 def _glob_patterns(value):
@@ -386,6 +488,8 @@ def _render_impl(context, scene, lf, sets, width, height):
     hair = bool(getattr(scene.lf, "hair_lines", True))
     hair_max = int(getattr(scene.lf, "hair_max_strands", 4000))
     hair_points = int(getattr(scene.lf, "hair_points", 32))
+    want_hidden = bool(getattr(scene.lf, "pass_hidden", False))
+    want_depth = bool(getattr(scene.lf, "pass_depth", False))
     rw = width * ss
     rh = height * ss
     sig = _geometry_signature(context, scene)
@@ -405,27 +509,51 @@ def _render_impl(context, scene, lf, sets, width, height):
     else:
         _LAST["cache_hit"] = True
     accum = np.zeros((rh, rw, 4), np.float32)
+    hidden_accum = np.zeros((rh, rw, 4), np.float32) if want_hidden else None
+    depth_image = None
     all_lines = []
     total_strokes = 0
     total_ms = 0.0
+    raster_ms = 0.0
+    stroke_ms = 0.0
+    composite_ms = 0.0
     mod = core()
 
-    for node in sets:
+    for index, node in enumerate(sets):
         edge_sel, obj_sel = resolve_selection(node, snap)
         data = scene_dict(snap, edge_sel, obj_sel)
         settings = build_settings(snap, node, scene, rw, rh, scale_mul=ss)
+        settings["want_hidden_image"] = want_hidden
+        # Depth is scene geometry, not per line set: only the first pass needs it.
+        settings["want_depth"] = want_depth and index == 0
         res = mod.render_scene(data, settings)
         img = res["image"]
         if img is not None:
             img = np.asarray(img, np.float32).reshape(rh, rw, 4)
             _alpha_over(accum, img)
+        if hidden_accum is not None and res.get("hidden_image") is not None:
+            hid = np.asarray(res["hidden_image"], np.float32).reshape(rh, rw, 4)
+            _alpha_over(hidden_accum, hid)
+        if depth_image is None and res.get("depth_image") is not None:
+            depth_image = np.asarray(res["depth_image"], np.float32).reshape(rh, rw)
         all_lines.extend(res["lines"])
         st = res["stats"]
         total_strokes += int(st["stroke_count"])
         total_ms += float(st["time_ms"])
+        raster_ms += float(st.get("raster_ms", 0.0))
+        stroke_ms += float(st.get("stroke_ms", 0.0))
+        composite_ms += float(st.get("composite_ms", 0.0))
 
     if ss > 1:
         accum = accum.reshape(height, ss, width, ss, 4).mean(axis=(1, 3))
+        if hidden_accum is not None:
+            hidden_accum = hidden_accum.reshape(height, ss, width, ss, 4).mean(axis=(1, 3))
+        if depth_image is not None:
+            d = depth_image.reshape(height, ss, width, ss)
+            valid = d > 0.0
+            count = valid.sum(axis=(1, 3))
+            total = np.where(valid, d, 0.0).sum(axis=(1, 3))
+            depth_image = np.where(count > 0, total / np.maximum(count, 1), 0.0)
         inv = 1.0 / float(ss)
         for ln in all_lines:
             pts = np.asarray(ln["points"], np.float32)
@@ -438,11 +566,16 @@ def _render_impl(context, scene, lf, sets, width, height):
     _LAST["render_id"] = _RENDER_ID
     _LAST["lines"] = all_lines
     _LAST["image"] = accum
+    _LAST["hidden"] = hidden_accum
+    _LAST["depth"] = depth_image
     _LAST["size"] = (width, height)
     _LAST["stats"] = {
         "lines": len(all_lines),
         "strokes": total_strokes,
         "core_ms": total_ms,
+        "raster_ms": raster_ms,
+        "stroke_ms": stroke_ms,
+        "composite_ms": composite_ms,
         "extract_ms": elapsed - total_ms,
         "total_ms": elapsed,
         "tris": int(snap.tris.shape[0]),
@@ -453,6 +586,11 @@ def _render_impl(context, scene, lf, sets, width, height):
         "cache_hit": bool(_LAST.get("cache_hit", False)),
         "frame": int(scene.frame_current),
     }
+    if depth_image is not None:
+        valid = depth_image[depth_image > 0.0]
+        _LAST["stats"]["depth_min"] = float(valid.min()) if valid.size else 0.0
+        _LAST["stats"]["depth_max"] = float(valid.max()) if valid.size else 0.0
+        _LAST["stats"]["depth_coverage"] = float((depth_image > 0.0).mean())
     return accum
 
 
@@ -484,6 +622,101 @@ def write_pass_image(context, rgba, name=None):
     img.pixels.foreach_set(buf)
     img.update()
     return img
+
+
+def write_hidden_image(context, rgba=None, name=None):
+    """Write the hidden-stroke AOV into its own Blender image (straight alpha)."""
+    lf = context.scene.lf
+    rgba = _LAST.get("hidden") if rgba is None else rgba
+    if rgba is None:
+        return None
+    name = name or getattr(lf, "pass_hidden_image", "") or "LineForge Hidden"
+    img = write_pass_image(context, rgba, name=name)
+    _LAST["hidden_image"] = img
+    return img
+
+
+def write_depth_image(context, depth=None, name=None):
+    """Write the depth AOV as an RGBA float image (depth in RGB, 1.0 in alpha).
+
+    Depth stays raw view-space units, so keep the image Non-Color (and save it as
+    OpenEXR) or the numbers will be tone-mapped.
+    """
+    lf = context.scene.lf
+    depth = _LAST.get("depth") if depth is None else depth
+    if depth is None:
+        return None
+    name = name or getattr(lf, "pass_depth_image", "") or "LineForge Depth"
+    h, w = depth.shape[0], depth.shape[1]
+    img = bpy.data.images.get(name)
+    if img is not None and (img.size[0] != w or img.size[1] != h):
+        bpy.data.images.remove(img)
+        img = None
+    if img is None:
+        img = bpy.data.images.new(name, width=w, height=h, alpha=True, float_buffer=True)
+    img.colorspace_settings.name = 'Non-Color'
+    img.alpha_mode = 'STRAIGHT'
+    rgba = np.empty((h, w, 4), np.float32)
+    rgba[..., 0] = depth
+    rgba[..., 1] = depth
+    rgba[..., 2] = depth
+    rgba[..., 3] = 1.0
+    img.pixels.foreach_set(np.ascontiguousarray(rgba[::-1].reshape(-1), np.float32))
+    img.update()
+    _LAST["depth_image"] = img
+    return img
+
+
+def write_all_passes(context):
+    """Materialise every enabled pass (line / hidden / depth) as Blender images."""
+    lf = context.scene.lf
+    images = {}
+    rgba = _LAST.get("image")
+    if rgba is not None:
+        images["lines"] = write_pass_image(context, rgba)
+    if getattr(lf, "pass_hidden", False):
+        img = write_hidden_image(context)
+        if img is not None:
+            images["hidden"] = img
+    if getattr(lf, "pass_depth", False):
+        img = write_depth_image(context)
+        if img is not None:
+            images["depth"] = img
+    _LAST["pass_images"] = images
+    return images
+
+
+def save_passes(context, filepath):
+    """Render and write the enabled passes next to `filepath`.
+
+    Produces `<base>_lines.png`, `<base>_hidden.png` and `<base>_depth.exr`;
+    returns the list of files that were written.
+    """
+    lf = context.scene.lf
+    if not filepath:
+        raise LineForgeError("LineForge: choose an output path for the passes")
+    render(context)
+    images = write_all_passes(context)
+    base = os.path.splitext(bpy.path.abspath(filepath))[0]
+    written = []
+    specs = (
+        ("lines", base + "_lines.png", 'PNG'),
+        ("hidden", base + "_hidden.png", 'PNG'),
+        ("depth", base + "_depth.exr", 'OPEN_EXR'),
+    )
+    for key, path, fmt in specs:
+        img = images.get(key)
+        if img is None:
+            continue
+        img.filepath_raw = path
+        img.file_format = fmt
+        if fmt == 'OPEN_EXR':
+            img.save()
+        else:
+            img.save()
+        written.append(path)
+    _LAST["passes"] = written
+    return written
 
 
 def setup_compositor(context, img):

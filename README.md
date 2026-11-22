@@ -30,6 +30,18 @@ compiled by the `build.yml` CI workflow.
   (display-space straight-alpha over), no compositor node group involved — the reliable way to
   get a finished image, including in background mode.
 * **Exclude Objects**: comma separated object name substrings left out of the pass, for helper shells and proxies.
+* **AOV / multi-pass output** (`Passes (AOV)`): the core can emit the occluded strokes and the depth buffer
+  next to the line pass. `Save Passes` writes `<base>_lines.png`, `<base>_hidden.png` and `<base>_depth.exr`;
+  `LineForge Hidden` / `LineForge Depth` are the image datablocks for compositor work. Depth is view-space
+  distance in scene units, 0 where nothing was hit.
+* **Image brush textures**: a line set can drive its width profile from any loaded image
+  (`Image Brush`: image, channel LUMA/ALPHA/RED/GREEN/BLUE, invert, amplitude, repeat); the image is resampled to a
+  256-tap profile along the stroke, so scanned pencil/ink strips work without touching the procedural presets.
+* **Backface culling** for the depth pass (`Backface Culling`: Off / Cull Back / Cull Front, default Cull Back):
+  edge detection is unchanged, only the G-buffer is halved — switching it on cut the 1080p depth pass from 331 ms to 230 ms.
+* **Fast native core**: the triangle rasteriser runs a 4-pixel SSE2 batch (edge functions, reciprocals, lane masks),
+  strokes and the compositor walk only the dirty rectangle, and the depth pass culls hidden sides;
+  the 1080p demo went from 175 ms to 118 ms at supersampling 1 and 503 ms to 399 ms at 2.
 * **See-through faces are skipped** (`Skip See-through Faces`, `Alpha Cutoff`, `Keep Names`): a triangle whose material drives
   Principled *Alpha* from an image is sampled at seven barycentric points (coverage score = mean and peak of the mask), and
   faces below the cutoff are left out of the G-buffer and the line pass. Without it, sheer cloth, eyelash cards and garment
@@ -90,8 +102,9 @@ compiled by the `build.yml` CI workflow.
 
 `docs/line_pass_1080p.png` — line pass rendered by the native core from a real VRM scene
 (`C:\PencilPlus\vrm_pcl_line5.blend`: 70,794 triangles, 55 meshes, 1920×1080):
-≈1500 polylines / 33,000 segments in **~0.6 s** core time at supersampling 2 (≈2.9 s including depsgraph
-extraction; a cached frame skips extraction and only pays the core time).
+≈1540 polylines / 33,000 segments in **~0.40 s** core time at supersampling 2 (depth pass 233 ms,
+strokes 50 ms, compositing 116 ms; ≈2.4 s including depsgraph extraction; a cached frame skips
+extraction and only pays the core time).
 
 `docs/composite_1080p.png` — the same pass alpha-over the EEVEE beauty render.
 
@@ -152,7 +165,8 @@ tests/                  headless test scripts: smoke_core, test_style (taper/bru
                         hidden), test_overlay, blender_addon_test, blender_scene_pass,
                         blender_composite_op, blender_aa_test, blender_ortho_test,
                         blender_transparent_test, blender_strand_test, blender_filter_test,
-                        blender_cache_test, blender_pattern_test, blender_robustness,
+                        blender_cache_test, blender_pattern_test, blender_passes_test,
+                        blender_brush_image_test, blender_cull_test, blender_robustness,
                         blender_install_test
 tools/get-toolchain.ps1 portable toolchain bootstrap (Windows)
 tools/build.py          cross-platform core build (Python 3 + any C++17 compiler or MSVC)

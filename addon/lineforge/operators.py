@@ -211,6 +211,36 @@ class LF_OT_save_pass(Operator):
         return {'FINISHED'}
 
 
+class LF_OT_save_passes(Operator):
+    bl_idname = "lf.save_passes"
+    bl_label = "Save Passes"
+    bl_description = (
+        "Render once and write every enabled pass: <name>_lines.png, "
+        "<name>_hidden.png and <name>_depth.exr"
+    )
+    bl_options = {'REGISTER'}
+
+    filepath: StringProperty(
+        name="Base Path",
+        subtype='FILE_PATH',
+        description="Output base path; the pass suffixes are appended to it",
+    )
+
+    def execute(self, context):
+        try:
+            base = self.filepath
+            if not base:
+                blend = bpy.data.filepath
+                base = (os.path.splitext(blend)[0] if blend
+                        else os.path.join(tempfile.gettempdir(), "lineforge")) + "_passes.png"
+            written = renderer.save_passes(context, base)
+        except Exception as exc:  # noqa: BLE001
+            return _fail(self, context, exc, "LineForge: saving the passes failed")
+        _record(context, renderer.last_stats())
+        self.report({'INFO'}, "Saved %d pass(es)" % len(written))
+        return {'FINISHED'}
+
+
 class LF_OT_open_tree(Operator):
     bl_idname = "lf.open_tree"
     bl_label = "Edit LineForge Nodes"
@@ -279,7 +309,8 @@ class LF_OT_check_core(Operator):
 
 CLASSES = (
     LF_OT_create_tree, LF_OT_add_lineset, LF_OT_render, LF_OT_render_composite,
-    LF_OT_preview, LF_OT_save_pass, LF_OT_open_tree, LF_OT_toggle_overlay, LF_OT_check_core,
+    LF_OT_preview, LF_OT_save_pass, LF_OT_save_passes, LF_OT_open_tree,
+    LF_OT_toggle_overlay, LF_OT_check_core,
 )
 
 

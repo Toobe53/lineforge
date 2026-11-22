@@ -187,6 +187,10 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
     if (settings.contains("hidden_lines")) S.hidden_lines = settings["hidden_lines"].cast<bool>();
     if (settings.contains("hidden_alpha")) S.hidden_alpha = settings["hidden_alpha"].cast<float>();
     if (settings.contains("hidden_width")) S.hidden_width = settings["hidden_width"].cast<float>();
+    if (settings.contains("want_hidden_image"))
+        S.want_hidden_image = settings["want_hidden_image"].cast<bool>();
+    if (settings.contains("want_depth")) S.want_depth = settings["want_depth"].cast<bool>();
+    if (settings.contains("cull_backfaces")) S.cull_backfaces = settings["cull_backfaces"].cast<int>();
     if (settings.contains("crease_angle_deg"))
         S.crease_angle_deg = settings["crease_angle_deg"].cast<float>();
     if (settings.contains("depth_bias")) S.depth_bias = settings["depth_bias"].cast<float>();
@@ -244,6 +248,25 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
         out["image"] = py::none();
     }
 
+    if (!r.hidden_image.empty()) {
+        py::array_t<float> hidden(
+            {py::ssize_t(r.height), py::ssize_t(r.width), py::ssize_t(4)});
+        std::memcpy(hidden.mutable_data(), r.hidden_image.data(),
+                    sizeof(float) * r.hidden_image.size());
+        out["hidden_image"] = hidden;
+    } else {
+        out["hidden_image"] = py::none();
+    }
+
+    if (!r.depth_image.empty()) {
+        py::array_t<float> depth({py::ssize_t(r.height), py::ssize_t(r.width)});
+        std::memcpy(depth.mutable_data(), r.depth_image.data(),
+                    sizeof(float) * r.depth_image.size());
+        out["depth_image"] = depth;
+    } else {
+        out["depth_image"] = py::none();
+    }
+
     py::list lines;
     for (const auto& pl : r.lines) lines.append(line_to_dict(pl));
     out["lines"] = lines;
@@ -253,6 +276,9 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
     stats["edge_count"] = r.edge_count;
     stats["stroke_count"] = r.stroke_count;
     stats["time_ms"] = r.time_ms;
+    stats["raster_ms"] = r.raster_ms;
+    stats["stroke_ms"] = r.stroke_ms;
+    stats["composite_ms"] = r.composite_ms;
     stats["width"] = r.width;
     stats["height"] = r.height;
     out["stats"] = stats;
@@ -263,7 +289,7 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
 
 PYBIND11_MODULE(lineforge_core, m) {
     m.doc() = "LineForge CPU line-rendering core";
-    m.attr("__version__") = "0.3.0";
+    m.attr("__version__") = "0.4.0";
     m.attr("LT_OBJECT") = int(lf::LT_OBJECT);
     m.attr("LT_CREASE") = int(lf::LT_CREASE);
     m.attr("LT_BOUNDARY") = int(lf::LT_BOUNDARY);

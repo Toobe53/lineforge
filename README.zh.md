@@ -48,7 +48,7 @@ MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一�
 
 ## 安装
 
-1. 用现成的包：`dist/lineforge-0.3.0.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
+1. 用现成的包：`dist/lineforge-0.4.0.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
 2. Blender → 编辑 › 偏好设置 › 插件 › 安装… → 选中该 zip → 勾选启用 **LineForge**。
 3. 本机已安装并启用（`%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\lineforge`）。
 4. 侧栏 **LineForge** 页签顶部显示内核状态；红色时点 *Check Native Core* 会显示平台标签与具体加载错误。
@@ -58,7 +58,7 @@ MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一�
 ```powershell
 pwsh -File C:\LineForge\tools\get-toolchain.ps1   # 首次：下载 w64devkit + CPython 3.13 头 + pybind11
 pwsh -File C:\LineForge\build.ps1                 # 编译 src/*.cpp → addon/lineforge/bin/win64/lineforge_core.pyd
-pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.3.0.zip
+pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.4.0.zip
 ```
 
 Linux / macOS 用跨平台脚本或 CMake 自行构建（无需 Blender）：
@@ -97,6 +97,23 @@ cmake -B build -DPython_EXECUTABLE=$(which python3) && cmake --build build
 场景设置里打开 *Hidden Lines*，被遮挡的笔画会以更细、更透明的"幽灵线"画在可见线下方，
 透明度/宽度分别由 *Hidden Alpha* / *Hidden Width* 控制。
 
+## 多 pass（AOV）输出
+
+*Passes (AOV)* 折叠框里可分别打开 **Hidden Pass**（只含被遮挡笔画）与 **Depth Pass**（视空间深度）。
+「Save Passes」会一次写出 `<base>_lines.png`、`<base>_hidden.png`、`<base>_depth.exr`；合成器里可直接用
+`LineForge Hidden` / `LineForge Depth` 两个图像数据块。深度是场景单位下的视空间距离，没打到几何的地方为 0。
+
+## 图像笔刷
+
+线集节点的 *Image Brush* 折叠框可以选任意已加载图像作为笔宽 profile：通道（LUMA/ALPHA/RED/GREEN/BLUE）、
+反相、幅度、重复次数。图像会被重采样成 256 档 profile 沿线应用，扫描的铅笔/墨线贴图可以直接用，不影响内置预设。
+
+## 背面剔除与提速
+
+*Backface Culling*（默认 Cull Back）只作用于深度缓冲：线型判定完全不变，但光栅量减半。
+内核另外做了 4 像素一批的 SSE2 三角形光栅、笔画与合成的脏矩形遍历，1080p 演示从超采样 1 的 175 ms 降到 118 ms、
+超采样 2 的 503 ms 降到 399 ms。
+
 ## 已知限制
 
 - Blender 内置合成器路径（*Composite Into Render*）仍是实验性的；复杂生产文件建议
@@ -109,4 +126,4 @@ cmake -B build -DPython_EXECUTABLE=$(which python3) && cmake --build build
 ## 性能参考
 
 `vrm_pcl_line5.blend`（55 网格 / 70,794 三角 / 116,144 边）在 1920×1080、4 个线集下：
-约 1500 条折线、33,000 段；超采样 2 下内核 **约 0.6 s**，含 depsgraph 提取约 2.9 s（同一帧第二次渲染命中快照缓存，只付内核时间）。
+约 1540 条折线、33,000 段；超采样 2 下内核 **约 0.40 s**（深度 233 ms、笔画 50 ms、合成 116 ms），含 depsgraph 提取约 2.4 s（同一帧第二次渲染命中快照缓存，只付内核时间）。

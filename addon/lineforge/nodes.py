@@ -87,6 +87,34 @@ class LFLineSetNode(Node):
     brush_alpha_amp: FloatProperty(name="Brush Alpha", default=0.0, min=0.0, max=1.0)
     brush_offset_random: FloatProperty(name="Random Phase", default=0.0, min=0.0, max=1.0)
 
+    texture_image: PointerProperty(
+        name="Image Brush",
+        type=bpy.types.Image,
+        description="Optional image whose horizontal profile modulates line width along each "
+                    "stroke (use a black/white grain, a dry-brush strip or any scan)",
+    )
+    texture_channel: EnumProperty(
+        name="Channel",
+        items=(('LUMA', "Luminance", "Average of RGB"),
+               ('ALPHA', "Alpha", "Image alpha channel"),
+               ('RED', "Red", "Red channel"),
+               ('GREEN', "Green", "Green channel"),
+               ('BLUE', "Blue", "Blue channel")),
+        default='LUMA',
+    )
+    texture_invert: BoolProperty(
+        name="Invert", default=False,
+        description="Swap light and dark so bright areas thin the stroke",
+    )
+    texture_amp: FloatProperty(
+        name="Image Strength", default=0.6, min=0.0, max=1.0,
+        description="How strongly the image profile thins the stroke",
+    )
+    texture_repeat: FloatProperty(
+        name="Image Repeat", default=1.0, min=0.01, soft_max=20.0,
+        description="How many times the image profile repeats along 256 px of stroke",
+    )
+
     pattern: EnumProperty(
         name="Pattern",
         items=(('SOLID', "Solid", "Continuous stroke"),
@@ -185,6 +213,16 @@ class LFLineSetNode(Node):
         box.prop(self, "brush_width_amp")
         box.prop(self, "brush_alpha_amp")
         box.prop(self, "brush_offset_random")
+        brush_img = layout.box()
+        brush_img.label(text="Image Brush", icon='IMAGE_DATA')
+        brush_img.prop(self, "texture_image")
+        if self.texture_image is not None:
+            row = brush_img.row(align=True)
+            row.prop(self, "texture_channel", text="")
+            row.prop(self, "texture_invert", text="Invert")
+            row = brush_img.row(align=True)
+            row.prop(self, "texture_amp")
+            row.prop(self, "texture_repeat")
         box = layout.box()
         box.label(text="Pattern")
         box.prop(self, "pattern", text="")

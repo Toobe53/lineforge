@@ -69,6 +69,11 @@ struct Settings {
     bool hidden_lines = false;
     float hidden_alpha = 0.25f;
     float hidden_width = 0.5f;
+    // AOV switches: produce the occluded-stroke image and/or a depth buffer.
+    // Requesting the hidden image also enables the hidden stroke pass when the
+    // hidden lines themselves are turned off.
+    bool want_hidden_image = false;
+    bool want_depth = false;
     float crease_angle_deg = 60.f;
     float depth_bias = 0.0015f; // relative to view depth
     float simplify_px = 0.6f;
@@ -80,6 +85,11 @@ struct Settings {
 
     float intersection_depth_tol = 0.01f;
     int seed = 12345;
+
+    // Back-face culling for the G-buffer. 0 keeps both sides (safe for single-sided
+    // cards), 1/2 keep the screen-space winding that faces the camera. Culling
+    // roughly halves the depth pass on closed meshes.
+    int cull_backfaces = 0;
 
     // Hair / strand polylines (Blender CURVES objects). These are drawn as
     // capsules with a per-point world-space radius, so a strand always keeps a
@@ -130,11 +140,19 @@ struct Result {
     int width = 0;
     int height = 0;
     std::vector<float> image; // RGBA premultiplied, row-major, top-left origin
+    // Optional AOVs. hidden_image holds the occluded part of every stroke, drawn
+    // on its own so a compositor can tint it independently (see-through X-ray
+    // lines). depth_image holds one view-space depth per pixel, 0 for background.
+    std::vector<float> hidden_image;
+    std::vector<float> depth_image;
     std::vector<Polyline> lines;
     int tri_count = 0;
     int edge_count = 0;
     int stroke_count = 0;
     double time_ms = 0.0;
+    double raster_ms = 0.0;
+    double stroke_ms = 0.0;
+    double composite_ms = 0.0;
 };
 
 Result render(const SceneView& sv, const Settings& s);

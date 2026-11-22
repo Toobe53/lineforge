@@ -27,6 +27,24 @@ class LFSceneProps(PropertyGroup):
     hidden_width: FloatProperty(name="Hidden Width", default=0.5, min=0.01, max=8.0)
 
     pass_image: StringProperty(name="Pass Image", default="LineForge Pass")
+    pass_hidden: BoolProperty(
+        name="Hidden Pass",
+        default=False,
+        description="Also produce a separate image with the occluded part of every stroke "
+                    "(an X-ray/hidden-line AOV a compositor can tint independently)",
+    )
+    pass_depth: BoolProperty(
+        name="Depth Pass",
+        default=False,
+        description="Also produce a linear view-space depth pass of the line-art G-buffer, "
+                    "for depth-of-field, fog or depth-based grading",
+    )
+    pass_hidden_image: StringProperty(
+        name="Hidden Image", default="LineForge Hidden"
+    )
+    pass_depth_image: StringProperty(
+        name="Depth Image", default="LineForge Depth"
+    )
     exclude_objects: StringProperty(
         name="Exclude Objects",
         default="",
@@ -47,6 +65,19 @@ class LFSceneProps(PropertyGroup):
         default=False,
         description="With an orthographic camera, scale world-space line widths by distance "
                     "instead of using one constant screen width (nearer geometry draws thicker)",
+    )
+    cull_backfaces: EnumProperty(
+        name="Backface Culling",
+        items=[
+            ('OFF', "Off", "Rasterise both sides (safest for single-sided cards)"),
+            ('BACK', "Cull Back", "Skip back-facing triangles in the depth pass (fastest)"),
+            ('FRONT', "Cull Front", "Keep back-facing triangles only (models with flipped normals)"),
+        ],
+        default='BACK',
+        description="Cull the hidden side of closed meshes before rasterising the depth "
+                    "buffer; roughly halves the depth pass. Only affects occlusion, never "
+                    "which edges are detected. Pick 'Off' if a model loses its surface "
+                    "occlusion, 'Cull Front' if the model was authored with reversed winding",
     )
     skip_outline_shells: BoolProperty(
         name="Skip Outline Shells",

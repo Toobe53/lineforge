@@ -45,6 +45,18 @@ class LF_PT_main(bpy.types.Panel):
         row.operator("lf.save_pass", icon='FILE_IMAGE')
         row.prop(lf, "overlay_enabled", text="", icon='HIDE_OFF' if lf.overlay_enabled else 'HIDE_ON')
 
+        passes = layout.box()
+        passes.label(text="Passes (AOV)", icon='RENDERLAYERS')
+        passes.prop(lf, "pass_hidden")
+        passes.prop(lf, "pass_depth")
+        if lf.pass_hidden:
+            passes.prop(lf, "pass_hidden_image")
+        if lf.pass_depth:
+            passes.prop(lf, "pass_depth_image")
+        row = passes.row(align=True)
+        row.operator("lf.save_passes", text="Save Passes", icon='FILE_NEW')
+        row.prop(lf, "pass_image", text="")
+
         box = layout.box()
         box.label(text="Line Sets", icon='NODETREE')
         out = lfnodes.output_node(tree)
@@ -67,6 +79,7 @@ class LF_PT_main(bpy.types.Panel):
         col = box.column(align=True)
         col.prop(lf, "line_scale")
         col.prop(lf, "supersample")
+        col.prop(lf, "cull_backfaces")
         cam = getattr(getattr(context, "scene", None), "camera", None)
         if cam is not None and getattr(cam.data, "type", "") == 'ORTHO':
             col.prop(lf, "ortho_width_falloff")
