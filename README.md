@@ -7,6 +7,10 @@ Line-art rendering for **Blender 5.2**, built on the same ideas as Pencil+ 4 Lin
 a native CPU line renderer driven by a node tree of *line sets*, composited over the
 beauty render — entirely inside the Blender process, no external render app.
 
+**New to LineForge?** Start with the user tutorial: [中文使用教程](docs/TUTORIAL.zh.md) ·
+[English tutorial](docs/TUTORIAL.md) — installation, the first line pass, all parameters,
+AOV output, troubleshooting and headless usage.
+
 Downloads: [latest release](https://github.com/Toobe53/lineforge/releases/latest) —
 one zip with the native core for **Windows x64, Linux x64 and macOS (arm64)**, all three
 compiled by the `build.yml` CI workflow.

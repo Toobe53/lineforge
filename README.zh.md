@@ -6,6 +6,9 @@
 下载：[最新 release](https://github.com/Toobe53/lineforge/releases/latest) —— 一个 zip 里打包了
 Windows x64、Linux x64、macOS (arm64) 三份原生内核，全部由 `build.yml` CI 编译。
 
+**第一次用？** 先看 **[使用教程](docs/TUTORIAL.zh.md)**：安装、五分钟出第一张线稿、全部参数表、
+AOV 多 pass、常见问题排查、无头渲染脚本。
+
 ![LineForge 在 VRM 角色上的合成效果](docs/composite_1080p.png)
 
 *线稿合成在 EEVEE 渲染之上（1920×1080，4 个线集，2× 超采样）；`docs/line_pass_1080p.png` 是纯线稿，`docs/crop_hair_1to1.png` 是 1:1 局部。*
