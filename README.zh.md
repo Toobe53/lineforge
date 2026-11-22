@@ -1,5 +1,11 @@
 # LineForge 使用说明（中文）
 
+[![build](https://github.com/Toobe53/lineforge/actions/workflows/build.yml/badge.svg)](https://github.com/Toobe53/lineforge/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Toobe53/lineforge?include_prereleases&sort=semver)](https://github.com/Toobe53/lineforge/releases)
+
+下载：[最新 release](https://github.com/Toobe53/lineforge/releases/latest) —— 一个 zip 里打包了
+Windows x64、Linux x64、macOS (arm64) 三份原生内核，全部由 `build.yml` CI 编译。
+
 Blender 5.2 的线稿渲染插件：C++ 原生内核（pybind11，CPU 光栅）+ Python 节点树界面，
 全部在 Blender 进程内运行，不依赖任何外部渲染程序。许可证 GPL-2.0-or-later。
 

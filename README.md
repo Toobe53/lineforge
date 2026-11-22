@@ -1,8 +1,15 @@
 # LineForge
 
+[![build](https://github.com/Toobe53/lineforge/actions/workflows/build.yml/badge.svg)](https://github.com/Toobe53/lineforge/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Toobe53/lineforge?include_prereleases&sort=semver)](https://github.com/Toobe53/lineforge/releases)
+
 Line-art rendering for **Blender 5.2**, built on the same ideas as Pencil+ 4 Line:
 a native CPU line renderer driven by a node tree of *line sets*, composited over the
 beauty render — entirely inside the Blender process, no external render app.
+
+Downloads: [latest release](https://github.com/Toobe53/lineforge/releases/latest) —
+one zip with the native core for **Windows x64, Linux x64 and macOS (arm64)**, all three
+compiled by the `build.yml` CI workflow.
 
 * Native core: C++17 + pybind11 (`lineforge_core.pyd`), CPU G-buffer + capsule raster.
 * Five line types: outline/silhouette, crease, mesh border, material boundary, object intersection.
