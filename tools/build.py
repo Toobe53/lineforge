@@ -50,41 +50,70 @@ def die(msg: str) -> "NoReturn":
     raise SystemExit(1)
 
 
-def find_python_home(explicit: str | None) -> tuple[str, str, str]:
-    """Return (include_dir, lib_dir, lib_name)."""
-    candidates = []
+def _python_homes(explicit: str | None) -> list[str]:
+    homes: list[str] = []
     if explicit:
-        candidates.append(explicit)
+        homes.append(explicit)
     if os.environ.get("LINEFORGE_PYTHON"):
-        candidates.append(os.environ["LINEFORGE_PYTHON"])
-    candidates.append(os.path.join(ROOT, "toolchain", "py313", "tools"))
+        homes.append(os.environ["LINEFORGE_PYTHON"])
+    homes.append(os.path.join(ROOT, "toolchain", "py313", "tools"))
+    if os.environ.get("BLENDER_PYTHON"):
+        homes.append(os.environ["BLENDER_PYTHON"])
+    homes.append(sys.base_prefix)
     try:
         import sysconfig  # noqa: PLC0415
 
-        candidates.append(sysconfig.get_paths().get("stdlib", ""))
+        homes.append(sysconfig.get_paths().get("data") or "")
     except Exception:  # noqa: BLE001
         pass
-    blender_py = os.environ.get("BLENDER_PYTHON")
-    if blender_py:
-        candidates.append(blender_py)
+    return [h for h in homes if h]
 
-    for home in [c for c in candidates if c]:
-        for inc in (os.path.join(home, "include"), os.path.join(home, "include", "python3.13")):
-            if os.path.isfile(os.path.join(inc, "Python.h")):
-                for lib in (os.path.join(home, "libs"), os.path.join(home, "lib"), home):
-                    if not os.path.isdir(lib):
-                        continue
-                    for name in ("python" + PY_MINOR, "python3.13", "python3.13m"):
-                        for ext in (".lib", ".a", ".so", ".dylib"):
-                            if os.path.isfile(os.path.join(lib, name + ext)):
-                                return inc, lib, name
-                if sys.platform != "win32":
-                    # Linux/macOS extension modules usually leave Python symbols undefined
-                    return inc, "", "python3.13"
+
+def find_python_home(explicit: str | None) -> tuple[str, str, str]:
+    """Return (include_dir, lib_dir, lib_name); lib_dir/lib_name may be empty (unix)."""
+    homes = _python_homes(explicit)
+
+    include_dirs: list[str] = []
+    for home in homes:
+        for sub in ("include", os.path.join("include", "python" + PY_MINOR)):
+            include_dirs.append(os.path.join(home, sub))
+    try:
+        import sysconfig  # noqa: PLC0415
+
+        for key in ("include", "platinclude"):
+            path = sysconfig.get_paths().get(key)
+            if path:
+                include_dirs.append(path)
+        for var in ("INCLUDEPY", "CONFINCLUDEPY"):
+            path = sysconfig.get_config_var(var)
+            if path:
+                include_dirs.append(path)
+    except Exception:  # noqa: BLE001
+        pass
+
+    for inc in include_dirs:
+        if not os.path.isfile(os.path.join(inc, "Python.h")):
+            continue
+        if sys.platform != "win32":
+            # Linux/macOS extension modules leave Python symbols undefined.
+            return inc, "", ""
+        for home in homes:
+            for lib in (os.path.join(home, "libs"), os.path.join(home, "lib"), home):
+                if not os.path.isdir(lib):
+                    continue
+                for name in ("python" + PY_MINOR, "python3.13", "python3.13m"):
+                    if os.path.isfile(os.path.join(lib, name + ".lib")):
+                        return inc, lib, name
+        die(
+            "Python.h found in %s but python%s.lib is missing.\n"
+            "  Windows needs the CPython 'libs' folder (python.org installer or the\n"
+            "  python.%s nuget package); pass --python-home <root containing include+libs>."
+            % (inc, PY_MINOR, PY_MINOR)
+        )
     die(
         "CPython 3.13 development files not found.\n"
         "  - point --python-home at a CPython 3.13 install (Windows: the 'tools' folder\n"
-        "    from the python.3.13.x nuget package), or\n"
+        "    from the python.3.13.x nuget package, or the python.org install root), or\n"
         "  - set LINEFORGE_PYTHON to that folder."
     )
 
