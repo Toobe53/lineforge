@@ -1,0 +1,73 @@
+# LineForge 使用说明（中文）
+
+Blender 5.2 的线稿渲染插件：C++ 原生内核（pybind11，CPU 光栅）+ Python 节点树界面，
+全部在 Blender 进程内运行，不依赖任何外部渲染程序。许可证 GPL-2.0-or-later。
+
+线稿支持超采样（1–4×，默认 2）：在 N 倍分辨率下光栅化后盒式降采样，消除细线与陡斜线的锯齿；静帧可调到 3–4，视口预览可降到 1。
+
+支持正交相机（用真实 clip 空间 w 与视图空间深度，不是透视近似）。
+
+## 安装
+
+1. 用现成的包：`dist/lineforge-0.2.0.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
+2. Blender → 编辑 › 偏好设置 › 插件 › 安装… → 选中该 zip → 勾选启用 **LineForge**。
+3. 本机已安装并启用（`%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\lineforge`）。
+4. 侧栏 **LineForge** 页签顶部显示内核状态；红色时点 *Check Native Core* 会显示平台标签与具体加载错误。
+
+从源码构建（Windows）：
+
+```powershell
+pwsh -File C:\LineForge\tools\get-toolchain.ps1   # 首次：下载 w64devkit + CPython 3.13 头 + pybind11
+pwsh -File C:\LineForge\build.ps1                 # 编译 src/*.cpp → addon/lineforge/bin/win64/lineforge_core.pyd
+pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.2.0.zip
+```
+
+Linux / macOS 用跨平台脚本或 CMake 自行构建（无需 Blender）：
+
+```bash
+python3 tools/build.py        # 自动找 python3 头、pybind11、编译器；输出 build/<平台标签>/
+cmake -B build -DPython_EXECUTABLE=$(which python3) && cmake --build build
+```
+
+插件包结构是单 zip + `bin/<平台标签>/`（win64 / win-arm64 / linux-x64 / linux-arm64 / macos-arm64 / macos-x64），加载器按运行平台选目录；找不到对应二进制时会在 UI 里报出平台标签与修复方法。
+
+## 快速上手
+
+1. 打开带相机的场景，3D 视图按 `N` → **LineForge** 页签 → *Create Node Tree*。
+   会自动建好 `LineForge` 节点树：Outline（轮廓）、Crease（折痕）、Border（网格边界）、
+   Intersection（物体交线）四个线集，全部接到输出节点。
+2. 在 Shader 编辑器（或 N 面板的 *Open Node Tree*）里编辑：每个 LineSet 节点有
+   类型、宽度、屏幕/世界空间、颜色、taper、随机宽度、距离衰减、笔刷预设等参数；
+   输出节点控制分辨率倍率、材质颜色、简化阈值、深度偏移。
+3. 渲染：点 **Render Line Pass**（或勾 *Auto Render on F12* 后按 F12）。若要一张不经合成器节点的终图，点 **Render Line Art PNG**（`lf.render_composite`）：它会用 Standard 视图变换渲 beauty、再渲线稿并自行合成，后台模式同样可用。
+   线稿会写入 `LineForge Pass` 图像并合成到渲染结果上。
+4. 视口预览：相机视图下打开覆盖层（*Toggle Overlay*），会叠加缓存的线稿。
+
+## 五种线
+
+| 类型 | 含义 |
+|---|---|
+| OUTLINE | 物体外轮廓（相邻面朝向相反） |
+| CREASE | 折痕（相邻面法线夹角超过阈值） |
+| BORDER | 网格开放边界 |
+| MATERIAL | 不同材质之间的边界 |
+| INTERSECTION | 两个物体表面相交处（由 G-buffer 物体 id 追踪） |
+
+## 隐藏线
+
+场景设置里打开 *Hidden Lines*，被遮挡的笔画会以更细、更透明的"幽灵线"画在可见线下方，
+透明度/宽度分别由 *Hidden Alpha* / *Hidden Width* 控制。
+
+## 已知限制
+
+- Blender 内置合成器路径（*Composite Into Render*）仍是实验性的；复杂生产文件建议
+  「渲染 pass 图 + 自己 alpha-over」，`tests/blender_demo_manual.py` 是确定性做法。
+- 双层布料模型（如 VRM）可能多出一圈内壳轮廓，用线集的 COLLECTION/OBJECT 过滤规避。
+- 交线由 G-buffer 推得，极薄的相交面可能断成多段。
+- 纯 CPU 光栅，定位是静帧产出，不是实时视口。
+- 视口覆盖层只画缓存的线稿，无 GPU 环境下只验证了几何辅助函数。
+
+## 性能参考
+
+`vrm_pcl_line5.blend`（55 网格 / 70,794 三角 / 116,144 边）在 1920×1080、4 个线集下：
+约 2200 条折线、24,000 段；超采样 2 下内核 **1.0–1.3 s**，含 depsgraph 提取约 3.2–3.8 s；超采样 1 时约 0.28 / 0.83 s。

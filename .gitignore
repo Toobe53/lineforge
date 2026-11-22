@@ -1,0 +1,21 @@
+# build outputs
+build/
+dist/
+toolchain/
+addon/lineforge/bin/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# local notes
+*.log
