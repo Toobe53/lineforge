@@ -30,11 +30,23 @@ compiled by the `build.yml` CI workflow.
   (display-space straight-alpha over), no compositor node group involved — the reliable way to
   get a finished image, including in background mode.
 * **Exclude Objects**: comma separated object name substrings left out of the pass, for helper shells and proxies.
-* **See-through faces are skipped** (`Skip See-through Faces`, `Alpha Cutoff`): a triangle whose material drives
-  Principled *Alpha* from an image is sampled at its UV centroid, and faces below the cutoff are left out of the
-  G-buffer and the line pass. Without it, sheer cloth, eyelash cards and garment layers that the render shows as
-  invisible would still be outlined as if they were opaque solids.
-* Inverted-hull outline materials (names containing `outline`) and `MToon Outline` geometry-node shells are skipped
+* **See-through faces are skipped** (`Skip See-through Faces`, `Alpha Cutoff`, `Keep Names`): a triangle whose material drives
+  Principled *Alpha* from an image is sampled at seven barycentric points (coverage score = mean and peak of the mask), and
+  faces below the cutoff are left out of the G-buffer and the line pass. Without it, sheer cloth, eyelash cards and garment
+  layers that the render shows as invisible would still be outlined as if they were opaque solids. `Keep Names` lists
+  object/material substrings (e.g. `eyelash, glasses`) that must never be skipped.
+* **Per-line-set filters** (`Objects`, `Materials`, `Skip Objects`, `Skip Materials`): comma separated globs on the line set node,
+  so one tree can draw, say, only the face or only one garment, including its intersection lines.
+* **Hair curves**: Blender 5.2 `CURVES` objects are drawn as tapered capsules from their own point/radius data
+  (`Hair Curves`, `Hair Width`, `Max Strands`, `Points per Strand`) — no triangulation, no G-buffer cost.
+* **Line patterns and brush textures**: `Solid / Dash / Dot` with period and duty, plus procedural `Charcoal`, `Pencil`
+  and `Ink` textures that modulate width along the stroke; per-line-set `Simplify` overrides the tree-wide tolerance.
+* **Animation-aware snapshot cache**: the extracted geometry is cached per frame and invalidated by a depsgraph
+  handler plus a cheap geometry signature (so scripted mesh edits cannot leave stale lines). Rendering the same frame
+  twice skips extraction entirely.
+* **Intersection quality**: intersection pixels are walked into chains, 1–3 px gaps are bridged, then RDP + two Chaikin
+  smoothing passes, so a cloth-on-cloth seam is one smooth curve instead of a dotted staircase.
+* **Inverted-hull outline materials** (names containing `outline`) and `MToon Outline` geometry-node shells are skipped
   automatically (`Skip Outline Shells`) so they do not occlude the real surface.
 * **Supersampling** (1-4x): the line pass is rasterised at N times the output size and box-filtered down, which removes staircase artefacts on thin or steep lines. Default 2; raise to 3-4 for stills, drop to 1 for fast viewport previews.
 * **Orthographic cameras** are supported (true clip-space `w` and view-space depth, not a perspective approximation).
@@ -78,7 +90,8 @@ compiled by the `build.yml` CI workflow.
 
 `docs/line_pass_1080p.png` — line pass rendered by the native core from a real VRM scene
 (`C:\PencilPlus\vrm_pcl_line5.blend`: 70,794 triangles, 55 meshes, 1920×1080):
-≈1500 polylines / 20,000 segments in **~0.5 s** core time at supersampling 2 (≈2.5 s including depsgraph extraction).
+≈1500 polylines / 33,000 segments in **~0.6 s** core time at supersampling 2 (≈2.9 s including depsgraph
+extraction; a cached frame skips extraction and only pays the core time).
 
 `docs/composite_1080p.png` — the same pass alpha-over the EEVEE beauty render.
 
@@ -138,7 +151,9 @@ src/                    C++ core (core.hpp, core.cpp) + pybind11 bindings (modul
 tests/                  headless test scripts: smoke_core, test_style (taper/brush/random/fade/
                         hidden), test_overlay, blender_addon_test, blender_scene_pass,
                         blender_composite_op, blender_aa_test, blender_ortho_test,
-                        blender_transparent_test, blender_robustness, blender_install_test
+                        blender_transparent_test, blender_strand_test, blender_filter_test,
+                        blender_cache_test, blender_pattern_test, blender_robustness,
+                        blender_install_test
 tools/get-toolchain.ps1 portable toolchain bootstrap (Windows)
 tools/build.py          cross-platform core build (Python 3 + any C++17 compiler or MSVC)
 CMakeLists.txt          alternative CMake build with pybind11

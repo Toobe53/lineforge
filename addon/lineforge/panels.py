@@ -78,6 +78,16 @@ class LF_PT_main(bpy.types.Panel):
         col.prop(lf, "skip_transparent_faces")
         if lf.skip_transparent_faces:
             col.prop(lf, "alpha_threshold")
+            col.prop(lf, "skip_transparent_whitelist")
+        hair = layout.box()
+        hair.label(text="Hair Curves", icon='CURVES')
+        haircol = hair.column(align=True)
+        haircol.prop(lf, "hair_lines")
+        if lf.hair_lines:
+            haircol.prop(lf, "hair_width")
+            row = haircol.row(align=True)
+            row.prop(lf, "hair_max_strands")
+            row.prop(lf, "hair_points")
         if lf.last_error:
             err = layout.box()
             err.label(text="Last Error", icon='ERROR')

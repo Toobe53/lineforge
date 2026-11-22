@@ -235,8 +235,7 @@ void rdp_simplify(const std::vector<Vec2>& pts, int i0, int i1, float eps, std::
     }
 }
 
-std::vector<Vec2> chaikin(const std::vector<Vec2>& pts, int iters) {
-    std::vector<Vec2> cur = pts;
+std::vector<Vec2> chaikin(const std::vector<Vec2>& pts, int iters) {    std::vector<Vec2> cur = pts;
     for (int it = 0; it < iters && cur.size() >= 2; ++it) {
         std::vector<Vec2> out;
         out.reserve(cur.size() * 2);
@@ -251,6 +250,45 @@ std::vector<Vec2> chaikin(const std::vector<Vec2>& pts, int iters) {
         cur.swap(out);
     }
     return cur;
+}
+
+float hash01(unsigned x) {
+    x ^= x >> 16;
+    x *= 0x7feb352du;
+    x ^= x >> 15;
+    x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return float(x & 0xffffffu) / 16777216.f;
+}
+
+float value_noise(float x, unsigned seed) {
+    const float fl = std::floor(x);
+    const float f = x - fl;
+    const float a = hash01(unsigned(int(fl)) + seed * 7919u);
+    const float b = hash01(unsigned(int(fl) + 1) + seed * 7919u);
+    const float t = f * f * (3.f - 2.f * f);
+    return a + (b - a) * t;
+}
+
+// Procedural brush texture: multiplies stroke width (and lightly alpha) along the
+// arc length so a line can look like charcoal, pencil grain or splattered ink
+// without any image input.
+float texture_factor(int kind, float s, float scale, unsigned seed) {
+    if (kind <= 0) return 1.f;
+    const float sc = std::max(0.05f, scale);
+    const float x = s * 0.08f * sc;
+    if (kind == 1) { // charcoal
+        const float n = 0.65f * value_noise(x, seed) + 0.35f * value_noise(x * 3.7f, seed + 17u);
+        return 0.45f + 1.10f * n;
+    }
+    if (kind == 2) { // pencil grain
+        const float n = 0.6f * value_noise(x * 9.f, seed + 31u) +
+                        0.4f * value_noise(x * 23.f, seed + 47u);
+        return 0.55f + 0.80f * n;
+    }
+    // ink splatter: mostly full width with occasional gaps
+    const float n = value_noise(x * 2.2f, seed + 5u);
+    return n > 0.22f ? 1.f : 0.30f;
 }
 
 } // namespace
@@ -365,7 +403,37 @@ Result render(const SceneView& sv, const Settings& S) {
             depths.push_back(p.d);
             arcs.push_back(s);
         }
-        const float total = s;
+        float total = s;
+        const float simp = st.simplify_px >= 0.f ? st.simplify_px : S.simplify_px;
+        if (simp > 0.f && pts.size() > 3) {
+            std::vector<int> keep;
+            keep.push_back(0);
+            rdp_simplify(pts, 0, int(pts.size()) - 1, simp * 0.5f, keep);
+            keep.push_back(int(pts.size()) - 1);
+            std::sort(keep.begin(), keep.end());
+            keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+            if (keep.size() >= 2 && keep.size() < pts.size()) {
+                std::vector<Vec2> np2;
+                std::vector<float> nd, na;
+                float ns = 0.f;
+                np2.reserve(keep.size());
+                nd.reserve(keep.size());
+                na.reserve(keep.size());
+                for (int idx : keep) {
+                    if (!np2.empty()) {
+                        const Vec2& pp = np2.back();
+                        ns += std::hypot(pts[idx].x - pp.x, pts[idx].y - pp.y);
+                    }
+                    np2.push_back(pts[idx]);
+                    nd.push_back(depths[idx]);
+                    na.push_back(ns);
+                }
+                pts.swap(np2);
+                depths.swap(nd);
+                arcs.swap(na);
+                total = ns;
+            }
+        }
         if (total < 0.5f) return;
 
         Rgba col = st.color;
@@ -378,9 +446,11 @@ Result render(const SceneView& sv, const Settings& S) {
         const float hand_phase = uni(rng) * 6.2831853f;
         const float hand_freq = 0.015f + 0.06f * uni(rng);
         const float brush_off = S.brush.offset_random > 0.f ? uni(rng) : 0.f;
+        const unsigned tex_seed = unsigned(int(uni(rng) * 4096.f));
         float alpha = col.a;
         if (S.brush.alpha_amp > 0.f && !S.brush.profile.empty())
             alpha *= (1.f - S.brush.alpha_amp * 0.5f);
+        if (st.texture > 0) alpha *= 0.88f;
 
         Polyline pl;
         pl.type = type;
@@ -397,6 +467,8 @@ Result render(const SceneView& sv, const Settings& S) {
                 const float v = brush_sample(S.brush, arcs[i] * S.brush.repeat / 256.f + brush_off);
                 w *= (1.f - S.brush.width_amp * (1.f - v));
             }
+            if (st.texture > 0)
+                w *= clampf(texture_factor(st.texture, arcs[i], st.texture_scale, tex_seed), 0.25f, 2.f);
             if (st.random_width > 0.f)
                 w *= std::max(0.05f, 1.f + st.random_width * 0.5f *
                                           std::sin(arcs[i] * hand_freq + hand_phase));
@@ -416,14 +488,52 @@ Result render(const SceneView& sv, const Settings& S) {
             hc.a = pl.color.a * S.hidden_alpha;
             pal_hidden = canvas.add_color(hc);
         }
-        for (size_t i = 0; i + 1 < pts.size(); ++i) {
-            canvas.draw_capsule(pts[i], pts[i + 1], pl.widths[i], pl.widths[i + 1], depths[i],
-                                depths[i + 1], pal, bias, true);
+        auto draw_seg = [&](const Vec2& a, float wa, float da, const Vec2& b, float wb, float db) {
+            canvas.draw_capsule(a, b, wa, wb, da, db, pal, bias, true);
             if (hidden)
-                canvas.draw_capsule(pts[i], pts[i + 1], pl.widths[i] * S.hidden_width,
-                                    pl.widths[i + 1] * S.hidden_width, depths[i], depths[i + 1],
-                                    pal, bias + 0.02f, true, pal_hidden, true);
+                canvas.draw_capsule(a, b, wa * S.hidden_width, wb * S.hidden_width, da, db, pal,
+                                    bias + 0.02f, true, pal_hidden, true);
             ++out.stroke_count;
+        };
+        const bool dashed = st.pattern != 0 && st.pattern_period > 0.5f;
+        const float period = std::max(2.f, st.pattern_period);
+        const float on_len = st.pattern == 2
+                                 ? std::min(period * 0.30f, 4.f)
+                                 : period * clampf(st.pattern_duty, 0.05f, 0.95f);
+        for (size_t i = 0; i + 1 < pts.size(); ++i) {
+            if (!dashed) {
+                draw_seg(pts[i], pl.widths[i], depths[i], pts[i + 1], pl.widths[i + 1],
+                         depths[i + 1]);
+                continue;
+            }
+            // Walk the segment and only emit the "on" part of each pattern cycle,
+            // so long edges get proper dashes instead of an all-or-nothing segment.
+            const float s0 = arcs[i];
+            const float s1 = arcs[i + 1];
+            const float span = std::max(1e-5f, s1 - s0);
+            const float step = st.pattern == 2
+                                   ? clampf(on_len * 0.5f, 1.f, 4.f)
+                                   : clampf(period * 0.2f, 2.f, 8.f);
+            bool have_prev = false;
+            Vec2 prev_p{0.f, 0.f};
+            float prev_w = 0.f, prev_d = 0.f;
+            float t = s0;
+            while (true) {
+                const float s = std::min(t, s1);
+                const float u = (s - s0) / span;
+                const Vec2 q{pts[i].x + (pts[i + 1].x - pts[i].x) * u,
+                             pts[i].y + (pts[i + 1].y - pts[i].y) * u};
+                const float wq = pl.widths[i] + (pl.widths[i + 1] - pl.widths[i]) * u;
+                const float dq = depths[i] + (depths[i + 1] - depths[i]) * u;
+                const bool on = std::fmod(s, period) < on_len;
+                if (on && have_prev) draw_seg(prev_p, prev_w, prev_d, q, wq, dq);
+                prev_p = q;
+                prev_w = wq;
+                prev_d = dq;
+                have_prev = on;
+                if (s >= s1 - 1e-5f) break;
+                t += step;
+            }
         }
         out.lines.push_back(std::move(pl));
     };
@@ -517,6 +627,7 @@ Result render(const SceneView& sv, const Settings& S) {
         std::vector<uint8_t> visited(mask.size(), 0);
         const Style& ist = S.styles[LT_INTERSECTION];
         const uint16_t pal = canvas.add_color(ist.color);
+        std::vector<std::vector<Vec2>> chains;
         for (int y = 0; y < H; ++y) {
             for (int x = 0; x < W; ++x) {
                 const size_t s0 = size_t(y) * W + x;
@@ -548,27 +659,123 @@ Result render(const SceneView& sv, const Settings& S) {
                     cx += pdx;
                     cy += pdy;
                 }
-                if (pts.size() < 3) continue;
-                std::vector<int> keep{0};
-                rdp_simplify(pts, 0, int(pts.size()) - 1, std::max(0.4f, S.simplify_px), keep);
-                keep.push_back(int(pts.size()) - 1);
-                std::sort(keep.begin(), keep.end());
-                keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
-                std::vector<Vec2> spts;
-                for (int k : keep) spts.push_back(pts[k]);
-                if (spts.size() >= 3) spts = chaikin(spts, 1);
-                Polyline pl;
-                pl.type = LT_INTERSECTION;
-                pl.color = ist.color;
-                pl.pts = spts;
-                pl.widths.assign(spts.size(), ist.width);
-                for (size_t i = 0; i + 1 < spts.size(); ++i) {
-                    canvas.draw_capsule(spts[i], spts[i + 1], ist.width, ist.width, 1.f, 1.f, pal,
-                                        bias, false);
-                    ++out.stroke_count;
-                }
-                out.lines.push_back(std::move(pl));
+                if (pts.size() >= 2) chains.push_back(std::move(pts));
             }
+        }
+
+        // Bridge the 1..3 px gaps the pixel walk leaves behind, so a single
+        // object-object intersection comes out as one continuous curve instead of
+        // a string of short pieces.
+        const float bridge = 3.0f;
+        std::vector<char> taken(chains.size(), 0);
+        for (size_t i = 0; i < chains.size(); ++i) {
+            if (taken[i]) continue;
+            taken[i] = 1;
+            std::vector<Vec2> cur = std::move(chains[i]);
+            float best = bridge;
+            size_t bi = chains.size();
+            bool flip = false;
+            for (size_t j = i + 1; j < chains.size(); ++j) {
+                if (taken[j] || chains[j].empty()) continue;
+                const Vec2& a = cur.back();
+                const float d0 = std::hypot(chains[j].front().x - a.x, chains[j].front().y - a.y);
+                if (d0 < best) { best = d0; bi = j; flip = false; }
+                const float d1 = std::hypot(chains[j].back().x - a.x, chains[j].back().y - a.y);
+                if (d1 < best) { best = d1; bi = j; flip = true; }
+            }
+            if (bi < chains.size()) {
+                taken[bi] = 1;
+                const std::vector<Vec2>& nxt = chains[bi];
+                if (flip)
+                    cur.insert(cur.end(), nxt.rbegin(), nxt.rend());
+                else
+                    cur.insert(cur.end(), nxt.begin(), nxt.end());
+            }
+            chains[i] = std::move(cur);
+        }
+
+        for (size_t ci = 0; ci < chains.size(); ++ci) {
+            const std::vector<Vec2>& pts = chains[ci];
+            if (pts.size() < 3) continue;
+            float len = 0.f;
+            for (size_t k = 1; k < pts.size(); ++k)
+                len += std::hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y);
+            if (len < 2.f) continue;
+            std::vector<int> keep{0};
+            rdp_simplify(pts, 0, int(pts.size()) - 1, std::max(0.5f, S.simplify_px * 0.75f), keep);
+            keep.push_back(int(pts.size()) - 1);
+            std::sort(keep.begin(), keep.end());
+            keep.erase(std::unique(keep.begin(), keep.end()), keep.end());
+            std::vector<Vec2> spts;
+            for (int k : keep) spts.push_back(pts[k]);
+            if (spts.size() >= 3) spts = chaikin(spts, 2);
+            Polyline pl;
+            pl.type = LT_INTERSECTION;
+            pl.color = ist.color;
+            pl.pts = spts;
+            pl.widths.assign(spts.size(), ist.width);
+            for (size_t i = 0; i + 1 < spts.size(); ++i) {
+                canvas.draw_capsule(spts[i], spts[i + 1], ist.width, ist.width, 1.f, 1.f, pal,
+                                    bias, false);
+                ++out.stroke_count;
+            }
+            out.lines.push_back(std::move(pl));
+        }
+    }
+
+    // Hair strands: explicit polylines with a world-space radius per point.
+    if (S.draw_strands && sv.strand_pts && sv.strand_offsets && sv.nstrands > 0) {
+        const uint16_t pal = canvas.add_color(S.strand_color);
+        const bool hidden = S.hidden_lines && S.hidden_alpha > 0.f && S.hidden_width > 0.f;
+        uint16_t pal_hidden = 0;
+        if (hidden) {
+            Rgba hc = S.strand_color;
+            hc.a = S.strand_color.a * S.hidden_alpha;
+            pal_hidden = canvas.add_color(hc);
+        }
+        for (int si = 0; si < sv.nstrands; ++si) {
+            const int i0 = sv.strand_offsets[si];
+            const int i1 = sv.strand_offsets[si + 1];
+            if (i0 < 0 || i1 > sv.nstrand_pts || i1 - i0 < 2) continue;
+            std::vector<Vec2> pts;
+            std::vector<float> depths, widths;
+            pts.reserve(size_t(i1 - i0));
+            for (int i = i0; i < i1; ++i) {
+                const Vec3 v{sv.strand_pts[3 * i], sv.strand_pts[3 * i + 1], sv.strand_pts[3 * i + 2]};
+                const float cx = M.m[0] * v.x + M.m[1] * v.y + M.m[2] * v.z + M.m[3];
+                const float cy = M.m[4] * v.x + M.m[5] * v.y + M.m[6] * v.z + M.m[7];
+                const float cw = M.m[12] * v.x + M.m[13] * v.y + M.m[14] * v.z + M.m[15];
+                if (!(cw > 1e-6f)) break;  // clipped: stop this strand at the camera plane
+                const float iw = 1.f / cw;
+                const float sx = (cx * iw * 0.5f + 0.5f) * float(S.width);
+                const float sy = (0.5f - cy * iw * 0.5f) * float(S.height);
+                float d = cw;
+                if (sv.view) {
+                    const float* V = sv.view;
+                    d = -(V[8] * v.x + V[9] * v.y + V[10] * v.z + V[11]);
+                }
+                const float r = sv.strand_radius ? sv.strand_radius[i] : 0.002f;
+                float w = r * 2.f * S.strand_width_scale * focal / std::max(1e-3f, d);
+                pts.push_back({sx, sy});
+                depths.push_back(std::max(1e-3f, d));
+                widths.push_back(clampf(std::max(w, S.strand_min_px), 0.05f, 256.f));
+            }
+            if (pts.size() < 2) continue;
+            Polyline pl;
+            pl.type = LT_OBJECT;
+            pl.color = S.strand_color;
+            pl.pts = pts;
+            pl.widths = widths;
+            for (size_t i = 0; i + 1 < pts.size(); ++i) {
+                canvas.draw_capsule(pts[i], pts[i + 1], widths[i], widths[i + 1], depths[i],
+                                    depths[i + 1], pal, bias, true);
+                if (hidden)
+                    canvas.draw_capsule(pts[i], pts[i + 1], widths[i] * S.hidden_width,
+                                        widths[i + 1] * S.hidden_width, depths[i], depths[i + 1],
+                                        pal, bias + 0.02f, true, pal_hidden, true);
+                ++out.stroke_count;
+            }
+            out.lines.push_back(std::move(pl));
         }
     }
 

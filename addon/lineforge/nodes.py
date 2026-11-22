@@ -87,6 +87,59 @@ class LFLineSetNode(Node):
     brush_alpha_amp: FloatProperty(name="Brush Alpha", default=0.0, min=0.0, max=1.0)
     brush_offset_random: FloatProperty(name="Random Phase", default=0.0, min=0.0, max=1.0)
 
+    pattern: EnumProperty(
+        name="Pattern",
+        items=(('SOLID', "Solid", "Continuous stroke"),
+               ('DASH', "Dash", "Dashed stroke"),
+               ('DOT', "Dot", "Dotted stroke")),
+        default='SOLID',
+    )
+    pattern_period: FloatProperty(
+        name="Period", default=16.0, min=2.0, soft_max=120.0, subtype='PIXEL',
+        description="Length of one dash cycle",
+    )
+    pattern_duty: FloatProperty(
+        name="Duty", default=0.55, min=0.05, max=0.95,
+        description="Fraction of the cycle that is drawn",
+    )
+    texture: EnumProperty(
+        name="Texture",
+        items=(('NONE', "None", "Uniform stroke"),
+               ('CHARCOAL', "Charcoal", "Coarse, clumpy width variation"),
+               ('PENCIL', "Pencil", "Fine grain"),
+               ('INK', "Ink", "Mostly solid with occasional breaks")),
+        default='NONE',
+    )
+    texture_scale: FloatProperty(name="Texture Scale", default=1.0, min=0.1, soft_max=8.0)
+    simplify_override: BoolProperty(name="Override Simplify", default=False)
+    simplify_px: FloatProperty(
+        name="Simplify", default=0.6, min=0.0, soft_max=10.0, subtype='PIXEL',
+        description="Polyline simplification tolerance for this line set",
+    )
+
+    filter_objects: StringProperty(
+        name="Objects",
+        default="",
+        description="Comma separated object name globs to keep (empty = every object); "
+                    "e.g. 'Body*, Hair*'",
+    )
+    filter_materials: StringProperty(
+        name="Materials",
+        default="",
+        description="Comma separated material name globs to keep (empty = every material); "
+                    "e.g. '*_SKIN, *_CLOTH_01'",
+    )
+    exclude_objects: StringProperty(
+        name="Skip Objects",
+        default="",
+        description="Comma separated object name globs to drop from this line set",
+    )
+    exclude_materials: StringProperty(
+        name="Skip Materials",
+        default="",
+        description="Comma separated material name globs to drop from this line set",
+    )
+
     def init(self, context):
         self.outputs.new("LFLineSetSocket", "Line Set")
 
@@ -104,6 +157,12 @@ class LFLineSetNode(Node):
             col.prop(self, "crease_override")
             if self.crease_override:
                 col.prop(self, "crease_angle")
+        fbox = layout.box()
+        fbox.label(text="Filters")
+        fbox.prop(self, "filter_objects")
+        fbox.prop(self, "exclude_objects")
+        fbox.prop(self, "filter_materials")
+        fbox.prop(self, "exclude_materials")
 
     def draw_buttons_ext(self, context, layout):
         self.draw_buttons(context, layout)
@@ -126,6 +185,19 @@ class LFLineSetNode(Node):
         box.prop(self, "brush_width_amp")
         box.prop(self, "brush_alpha_amp")
         box.prop(self, "brush_offset_random")
+        box = layout.box()
+        box.label(text="Pattern")
+        box.prop(self, "pattern", text="")
+        if self.pattern != 'SOLID':
+            row = box.row(align=True)
+            row.prop(self, "pattern_period")
+            row.prop(self, "pattern_duty")
+        box.prop(self, "texture", text="")
+        if self.texture != 'NONE':
+            box.prop(self, "texture_scale")
+        row = box.row(align=True)
+        row.prop(self, "simplify_override")
+        row.prop(self, "simplify_px")
 
 
 class LFOutputNode(Node):

@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.0 — 2026-11-22
+
+* **Transparent-face detection is coverage based.** Each triangle is sampled at seven barycentric
+  points (centre, edge midpoints, three near-vertex offsets) and scored as `0.5 * mean + 0.5 * peak`,
+  so a card that is mostly empty but carries ink along one edge is kept, while evenly sheer cloth is
+  still dropped. The VRM demo skips 26,126 of 70,794 triangles. New `Keep Names`
+  (`skip_transparent_whitelist`) lists object/material substrings that must never be skipped.
+* **Per-line-set filters**: `Objects`, `Materials`, `Skip Objects`, `Skip Materials` on the line set
+  node (comma separated globs, matched with `fnmatchcase` and plain substrings). Filters apply to the
+  line sets themselves and to intersection objects. Covered by `tests/blender_filter_test.py`.
+* **Hair curves**: Blender 5.2 `CURVES` objects are parsed directly (`cv.points` position/radius,
+  `cv.curves` topology), resampled, and sent to the core as a strand channel
+  (`SceneView::strand_pts/strand_offsets/strand_radius`); the core draws them as tapered capsules with
+  `radius * focal / depth`, reusing the hidden-line pass, without triangulating or touching the
+  G-buffer. Settings: `Hair Curves`, `Hair Width`, `Max Strands`, `Points per Strand`.
+  Covered by `tests/blender_strand_test.py`.
+* **Animation-aware snapshot cache**: `renderer` caches the extracted `Snapshot` keyed by frame,
+  scene/layer, resolution, every extraction toggle, and a cheap geometry signature (per object:
+  name, rounded world translation, vertex count, strided vertex checksum). A depsgraph handler bumps
+  the version counter; the signature also catches scripts that edit mesh data without an event.
+  `stats["cache_hit"]` reports reuse. Covered by `tests/blender_cache_test.py`.
+* **Line patterns and brush textures**: per style `pattern` (Solid/Dash/Dot) with `pattern_period` /
+  `pattern_duty`, and procedural `texture` (Charcoal/Pencil/Ink) that modulates width along the arc.
+  Dashes are emitted by walking each segment, so long edges get proper dashes instead of an
+  all-or-nothing segment. Per-line-set `simplify_px` override with RDP applied to chains.
+  Covered by `tests/blender_pattern_test.py`.
+* **Intersection quality**: chains are collected first, 1–3 px gaps are bridged with a single greedy
+  nearest-endpoint pass, then RDP (0.75× tolerance) + two Chaikin iterations, and chains shorter than
+  2 px are dropped.
+* **Viewport overlay performance**: triangle strips and GPU batches are cached and only rebuilt when
+  the render id or region size changes; navigation reuses the existing batches.
+* Demo at 1080p / 2× supersampling: 1538 polylines / 33,211 segments, core 0.57 s, extract 2.29 s,
+  total 2.86 s (the extracted geometry is bigger than 0.2.1 because hair curves and the coverage-based
+  transparency are now part of it).
+
 ## 0.2.1 — 2026-11-22
 
 * **See-through faces are skipped.** For every material whose Principled *Alpha* is driven by an

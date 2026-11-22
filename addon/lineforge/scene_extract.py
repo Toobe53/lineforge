@@ -61,7 +61,53 @@ class Snapshot:
         "width", "height", "verts", "tris", "tri_normals", "tri_mat", "tri_obj", "tri_skip",
         "edges", "edge_tris", "obj_names", "mat_names", "mat_colors", "mvp", "proj",
         "view", "cam_pos", "cam_name", "visible_objects", "cam_ortho", "cam_ortho_scale",
+        "strand_pts", "strand_offsets", "strand_radius", "nstrands",
     )
+
+    def __init__(self):
+        self.strand_pts = None
+        self.strand_offsets = None
+        self.strand_radius = None
+        self.nstrands = 0
+
+
+def _curves_arrays(cv):
+    """Position/radius/topology of a hair curves datablock, or None when empty."""
+    npts = len(cv.points)
+    if npts == 0 or len(cv.curves) == 0:
+        return None
+    pos = np.empty(npts * 3, np.float32)
+    try:
+        cv.points.foreach_get("position", pos)
+    except Exception:  # noqa: BLE001 - attribute API differs across 4.x/5.x
+        attr = cv.attributes.get("position")
+        if attr is None:
+            return None
+        attr.data.foreach_get("vector", pos)
+    rad = np.full(npts, 0.0025, np.float32)
+    try:
+        rattr = cv.attributes.get("radius")
+        if rattr is not None:
+            rattr.data.foreach_get("value", rad)
+    except Exception:  # noqa: BLE001 - radius is optional
+        pass
+    nc = len(cv.curves)
+    first = np.empty(nc, np.int32)
+    length = np.empty(nc, np.int32)
+    try:
+        cv.curves.foreach_get("first_point_index", first)
+        cv.curves.foreach_get("points_length", length)
+    except Exception:  # noqa: BLE001 - fall back to sequential strands
+        return None
+    return pos.reshape(-1, 3), rad, first, length
+
+
+def _resample_run(pts, rad, limit):
+    """Stride a long strand down to `limit` points, keeping both endpoints."""
+    if len(pts) <= limit:
+        return pts, rad
+    idx = np.linspace(0.0, float(len(pts) - 1), limit).astype(np.int32)
+    return pts[idx], rad[idx]
 
 
 def _is_helper_material(name):
@@ -180,8 +226,8 @@ def _alpha_sampler(mat, image_cache):
     return _sample
 
 
-def _uv_tri_centroids(me):
-    """Per-triangle UV centroid, or None when the mesh has no UV layer."""
+def _uv_tri_corners(me):
+    """Per-triangle corner UVs as an (E, 3, 2) array, or None when the mesh has no UV layer."""
     if me.uv_layers.active is None:
         return None
     uv = me.uv_layers.active
@@ -193,15 +239,41 @@ def _uv_tri_centroids(me):
     uvarr = uvarr.reshape(-1, 2)
     loops = np.empty(len(me.loop_triangles) * 3, np.int32)
     me.loop_triangles.foreach_get("loops", loops)
-    return uvarr[loops.reshape(-1, 3)].mean(axis=1)
+    return uvarr[loops.reshape(-1, 3)]
+
+
+# Barycentric sample points per triangle: centroid, three edge midpoints and a
+# corner-biased point. Sampling several points (instead of the centroid only)
+# keeps thin features (lashes, glasses, painted strands) from being dropped just
+# because the single sample happened to land in a transparent gap.
+_COVERAGE_BARY = np.array(
+    [[1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0],
+     [0.5, 0.5, 0.0],
+     [0.5, 0.0, 0.5],
+     [0.0, 0.5, 0.5],
+     [0.7, 0.2, 0.1],
+     [0.2, 0.7, 0.1],
+     [0.1, 0.1, 0.8]], np.float32)
+
+
+def _alpha_coverage(corners, sample):
+    """Per-triangle alpha score in 0..1: mean and peak of the sampled points."""
+    values = []
+    for bary in _COVERAGE_BARY:
+        uvw = corners[:, 0, :] * bary[0] + corners[:, 1, :] * bary[1] + corners[:, 2, :] * bary[2]
+        values.append(np.asarray(sample(uvw[:, 0], uvw[:, 1]), np.float32))
+    stack = np.stack(values, axis=0)
+    # A triangle that is mostly transparent but contains a bit of opaque ink is kept
+    # (peak term), while a uniformly sheer triangle is dropped (mean term).
+    return 0.5 * stack.mean(axis=0) + 0.5 * stack.max(axis=0)
 
 
 def _transparent_skip_mask(me, tri, tmat_local, samplers, threshold):
-    """Triangles whose alpha texture is (nearly) transparent at their UV centroid."""
+    """Triangles whose material alpha is see-through, scored over the whole UV triangle."""
     if not samplers:
         return None
-    uv = _uv_tri_centroids(me)
-    if uv is None:
+    corners = _uv_tri_corners(me)
+    if corners is None:
         return None
     skip = np.zeros(tri.shape[0], bool)
     for slot, sample in samplers.items():
@@ -210,17 +282,19 @@ def _transparent_skip_mask(me, tri, tmat_local, samplers, threshold):
         sel = tmat_local == slot
         if not sel.any():
             continue
-        alpha = np.asarray(sample(uv[sel, 0], uv[sel, 1]), np.float32)
-        skip[sel] = alpha < threshold
+        score = _alpha_coverage(corners[sel], sample)
+        skip[sel] = score < threshold
     return skip if skip.any() else None
 
 
 def extract(context, width, height, use_render_visibility=True, exclude=(), skip_shells=True,
-            skip_transparent=True, alpha_threshold=0.5):
+            skip_transparent=True, alpha_threshold=0.5, transparent_keep=(),
+            hair=True, hair_max_strands=4000, hair_points=32):
     scene = context.scene
     depsgraph = context.evaluated_depsgraph_get()
 
     exclude = tuple(s.strip().casefold() for s in exclude if s and s.strip())
+    transparent_keep = tuple(s.strip().casefold() for s in transparent_keep if s and s.strip())
 
     cam = scene.camera
     if cam is None:
@@ -249,9 +323,13 @@ def extract(context, width, height, use_render_visibility=True, exclude=(), skip
         obj_names = []
         offset = 0
         image_cache = {}
+        strand_chunks = []
+        strand_offsets = [0]
+        strand_radius = []
+        strand_total = 0
 
         for ob in depsgraph.objects:
-            if ob.type != 'MESH':
+            if ob.type not in ('MESH', 'CURVE'):
                 continue
             orig = ob.original
             if use_render_visibility:
@@ -340,10 +418,14 @@ def extract(context, width, height, use_render_visibility=True, exclude=(), skip
                 # see-through geometry (sheer overskirts, alpha-cutout cards) would add
                 # outlines the beauty render never shows
                 if skip_transparent:
+                    obj_keep = bool(transparent_keep) and any(
+                        pat in orig.name.casefold() for pat in transparent_keep)
                     samplers = {}
                     for slot in np.unique(tmat_local):
                         key, mat = _material_key(ev, int(slot))
-                        samplers[int(slot)] = _alpha_sampler(mat, image_cache)
+                        keep = obj_keep or (bool(transparent_keep) and any(
+                            pat in key.casefold() for pat in transparent_keep))
+                        samplers[int(slot)] = None if keep else _alpha_sampler(mat, image_cache)
                     tskip = _transparent_skip_mask(me, tri, tmat_local, samplers, alpha_threshold)
                     if tskip is not None:
                         local_skip[tskip] = 1
@@ -358,8 +440,50 @@ def extract(context, width, height, use_render_visibility=True, exclude=(), skip
             finally:
                 ev.to_mesh_clear()
 
-        if not tri_chunks:
-            raise LineForgeError("LineForge: no renderable mesh geometry in the scene "
+        # Hair curves: strand polylines carry their own radius, so they are drawn as
+        # capsules instead of being tessellated into triangles (a cap of ~4k strands
+        # keeps the cost bounded while still reading as hair).
+        if hair and hair_max_strands > 0:
+            max_strands = int(hair_max_strands)
+            per_strand = max(2, int(hair_points))
+            for ob in depsgraph.objects:
+                if len(strand_chunks) >= max_strands or strand_total >= 200000:
+                    break
+                if ob.type != 'CURVES':
+                    continue
+                orig = ob.original
+                if use_render_visibility:
+                    if orig.hide_render or not orig.visible_get():
+                        continue
+                if exclude and any(pat in orig.name.casefold() for pat in exclude):
+                    continue
+                ev = ob.evaluated_get(depsgraph)
+                cv = getattr(ev, "data", None)
+                if cv is None:
+                    continue
+                arr = _curves_arrays(cv)
+                if arr is None:
+                    continue
+                pos, rad, first, length = arr
+                mw = _mat4_to_np(ev.matrix_world).astype(np.float64)
+                scale = float(np.linalg.norm(mw[:3, :3], axis=0).mean()) or 1.0
+                world = pos.astype(np.float64) @ mw[:3, :3].T + mw[:3, 3]
+                for c in range(len(first)):
+                    f = int(first[c])
+                    n = int(length[c])
+                    if n < 2 or f < 0 or f + n > len(world):
+                        continue
+                    pts, rr = _resample_run(world[f:f + n], rad[f:f + n], per_strand)
+                    strand_chunks.append(np.ascontiguousarray(pts, np.float32))
+                    strand_radius.append(np.ascontiguousarray(
+                        np.clip(rr * scale, 1e-4, 0.5), np.float32))
+                    strand_offsets.append(strand_offsets[-1] + len(pts))
+                    strand_total += len(pts)
+                    if len(strand_chunks) >= max_strands or strand_total >= 200000:
+                        break
+
+        if not tri_chunks and not strand_chunks:
+            raise LineForgeError("LineForge: no renderable mesh or curve geometry in the scene "
                                  "(check visibility and Exclude Objects)")
     finally:
         for mod, vp, rn in restore:
@@ -371,12 +495,20 @@ def extract(context, width, height, use_render_visibility=True, exclude=(), skip
             except Exception:  # noqa: BLE001 - scene state is already restored
                 pass
 
-    verts = np.ascontiguousarray(np.concatenate(verts_chunks, axis=0), np.float32)
-    tris = np.ascontiguousarray(np.concatenate(tri_chunks, axis=0), np.int32)
-    tri_normals = np.ascontiguousarray(np.concatenate(nrm_chunks, axis=0), np.float32)
-    tri_mat = np.ascontiguousarray(np.concatenate(mat_chunks, axis=0), np.int32)
-    tri_obj = np.ascontiguousarray(np.concatenate(obj_chunks, axis=0), np.int32)
-    tri_skip = np.ascontiguousarray(np.concatenate(skip_chunks, axis=0), np.uint8)
+    if tri_chunks:
+        verts = np.ascontiguousarray(np.concatenate(verts_chunks, axis=0), np.float32)
+        tris = np.ascontiguousarray(np.concatenate(tri_chunks, axis=0), np.int32)
+        tri_normals = np.ascontiguousarray(np.concatenate(nrm_chunks, axis=0), np.float32)
+        tri_mat = np.ascontiguousarray(np.concatenate(mat_chunks, axis=0), np.int32)
+        tri_obj = np.ascontiguousarray(np.concatenate(obj_chunks, axis=0), np.int32)
+        tri_skip = np.ascontiguousarray(np.concatenate(skip_chunks, axis=0), np.uint8)
+    else:  # curves-only scene: no surface to rasterise, strands only
+        verts = np.zeros((0, 3), np.float32)
+        tris = np.zeros((0, 3), np.int32)
+        tri_normals = np.zeros((0, 3), np.float32)
+        tri_mat = np.zeros((0,), np.int32)
+        tri_obj = np.zeros((0,), np.int32)
+        tri_skip = np.zeros((0,), np.uint8)
 
     edges, edge_tris = _edge_table(tris)
 
@@ -403,6 +535,11 @@ def extract(context, width, height, use_render_visibility=True, exclude=(), skip
     snap.tri_skip = tri_skip
     snap.edges = edges
     snap.edge_tris = edge_tris
+    if strand_chunks:
+        snap.strand_pts = np.ascontiguousarray(np.concatenate(strand_chunks, axis=0), np.float32)
+        snap.strand_radius = np.ascontiguousarray(np.concatenate(strand_radius, axis=0), np.float32)
+        snap.strand_offsets = np.ascontiguousarray(strand_offsets, np.int32)
+        snap.nstrands = len(strand_chunks)
     snap.obj_names = obj_names
     snap.mat_names = mat_names
     snap.mat_colors = mat_colors
@@ -443,4 +580,8 @@ def scene_dict(snap, edge_sel=None, obj_sel=None):
         d["edge_sel"] = np.ascontiguousarray(edge_sel, np.uint8)
     if obj_sel is not None:
         d["obj_sel"] = np.ascontiguousarray(obj_sel, np.uint8)
+    if snap.strand_pts is not None:
+        d["strand_pts"] = snap.strand_pts
+        d["strand_offsets"] = snap.strand_offsets
+        d["strand_radius"] = snap.strand_radius
     return d

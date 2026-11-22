@@ -1,5 +1,6 @@
 # LineForge — render pipeline (scene -> native core -> image/compositor).
 # GPL-2.0-or-later.
+import fnmatch
 import os
 import platform
 import sys
@@ -13,12 +14,13 @@ from . import nodes as lfnodes
 from .errors import LineForgeError
 from .scene_extract import extract, scene_dict
 
-ADDON_VERSION = "0.2.1"
+ADDON_VERSION = "0.3.0"
 _CORE = None
 _CORE_INFO = {"available": False, "path": "", "version": "", "error": "not initialised"}
 _SUPPRESS_HANDLER = False
 _RENDERING = False
-_LAST = {"lines": [], "stats": {}, "image": None, "size": (0, 0)}
+_LAST = {"lines": [], "stats": {}, "image": None, "size": (0, 0), "render_id": 0}
+_RENDER_ID = 0
 
 
 # ------------------------------------------------------------------ core ---
@@ -118,11 +120,17 @@ def last_stats():
     return _LAST["stats"]
 
 
+def last_render_id():
+    return int(_LAST.get("render_id", 0))
+
+
 # -------------------------------------------------------------- settings ---
 
 def _style_from_node(node, scene, scale):
     color = tuple(node.color)
     width = max(0.05, float(node.width) * scale)
+    lf = scene.lf
+    simplify = float(node.simplify_px) if bool(node.simplify_override) else -1.0
     return {
         "enabled": True,
         "width": width,
@@ -133,7 +141,17 @@ def _style_from_node(node, scene, scale):
         "random_width": float(node.random_width),
         "distance_fade": float(node.distance_fade),
         "fade_start": float(node.fade_start),
+        "pattern": PATTERN_INDEX.get(node.pattern, 0),
+        "pattern_period": max(2.0, float(node.pattern_period) * scale),
+        "pattern_duty": float(node.pattern_duty),
+        "texture": TEXTURE_INDEX.get(node.texture, 0),
+        "texture_scale": float(node.texture_scale),
+        "simplify_px": simplify * scale if simplify >= 0.0 else -1.0,
     }
+
+
+PATTERN_INDEX = {"SOLID": 0, "DASH": 1, "DOT": 2}
+TEXTURE_INDEX = {"NONE": 0, "CHARCOAL": 1, "PENCIL": 2, "INK": 3}
 
 
 def _empty_styles():
@@ -176,6 +194,11 @@ def build_settings(snap, node, scene, width, height, scale_mul=1.0):
         "hidden_lines": bool(lf.hidden_lines),
         "hidden_alpha": float(lf.hidden_alpha),
         "hidden_width": float(lf.hidden_width),
+        # Hair strands follow the object-outline pass so they are never drawn twice.
+        "draw_strands": bool(getattr(lf, "hair_lines", True)) and str(node.line_type) == 'OBJECT',
+        "strand_width_scale": float(getattr(lf, "hair_width", 1.0)),
+        "strand_min_px": 0.6,
+        "strand_color": list(styles[idx].get("color", [0.0, 0.0, 0.0, 1.0])),
         "styles": styles,
         "brush": {
             "profile": lfnodes.brush_profile(node.brush_preset),
@@ -188,27 +211,70 @@ def build_settings(snap, node, scene, width, height, scale_mul=1.0):
     return settings
 
 
+def _glob_patterns(value):
+    """Split a comma separated glob list into a lowercase tuple."""
+    return tuple(s.strip().casefold() for s in (value or "").split(",") if s.strip())
+
+
+def _matches_any(name, patterns):
+    return any(fnmatch.fnmatchcase(name, pat) or pat in name for pat in patterns)
+
+
+def _filter_names(names, keep, skip):
+    """Boolean mask over `names` honouring keep (empty = all) and skip globs."""
+    mask = np.ones(len(names), bool)
+    if keep:
+        folded = [n.casefold() for n in names]
+        mask[:] = [_matches_any(n, keep) for n in folded]
+    if skip:
+        folded = [n.casefold() for n in names]
+        mask &= [not _matches_any(n, skip) for n in folded]
+    return mask
+
+
 def resolve_selection(node, snap):
-    """Return (edge_sel, obj_sel) numpy masks, or (None, None) for the whole scene."""
+    """Return (edge_sel, obj_sel) numpy masks, or (None, None) when nothing is filtered.
+
+    Filters combine the source (scene/collection/object) with the per-line-set object
+    and material glob lists. `obj_sel` restricts G-buffer intersection detection; the
+    edge mask also drops edges whose both adjacent triangles are filtered out.
+    """
     names = None
     if node.source_type == 'COLLECTION' and node.collection is not None:
-        names = {ob.name for ob in node.collection.all_objects if ob.type == 'MESH'}
+        names = {ob.name for ob in node.collection.all_objects if ob.type in ('MESH', 'CURVES')}
     elif node.source_type == 'OBJECT' and node.object is not None:
         names = {node.object.name}
-    if names is None:
+
+    keep_obj = _glob_patterns(getattr(node, "filter_objects", ""))
+    skip_obj = _glob_patterns(getattr(node, "exclude_objects", ""))
+    keep_mat = _glob_patterns(getattr(node, "filter_materials", ""))
+    skip_mat = _glob_patterns(getattr(node, "exclude_materials", ""))
+
+    obj_mask = None
+    if names is not None:
+        obj_mask = np.array([n in names for n in snap.obj_names], bool)
+    if keep_obj or skip_obj:
+        extra = _filter_names(list(snap.obj_names), keep_obj, skip_obj)
+        obj_mask = extra if obj_mask is None else (obj_mask & extra)
+
+    tri_allowed = None
+    if obj_mask is not None:
+        tri_allowed = obj_mask[snap.tri_obj]
+
+    if keep_mat or skip_mat:
+        mat_mask = _filter_names(list(snap.mat_names), keep_mat, skip_mat)
+        tri_mat_ok = mat_mask[snap.tri_mat]
+        tri_allowed = tri_mat_ok if tri_allowed is None else (tri_allowed & tri_mat_ok)
+
+    if tri_allowed is None:
         return None, None
-    obj_sel = np.zeros(len(snap.obj_names), np.uint8)
-    for i, name in enumerate(snap.obj_names):
-        if name in names:
-            obj_sel[i] = 1
-    if not obj_sel.any():
-        return np.zeros(len(snap.edges), np.uint8), obj_sel
-    tri_allowed = obj_sel[snap.tri_obj] != 0
+
     t0 = snap.edge_tris[:, 0]
     t1 = snap.edge_tris[:, 1]
     ok0 = np.where(t0 >= 0, tri_allowed[np.maximum(t0, 0)], False)
     ok1 = np.where(t1 >= 0, tri_allowed[np.maximum(t1, 0)], False)
     edge_sel = np.logical_or(ok0, ok1).astype(np.uint8)
+    obj_sel = None if obj_mask is None else obj_mask.astype(np.uint8)
     return edge_sel, obj_sel
 
 
@@ -260,17 +326,84 @@ def render(context, width=None, height=None):
         _RENDERING = False
 
 
+_SCENE_VERSION = 0
+_SNAP_CACHE = {"key": None, "snap": None}
+
+
+def mark_scene_changed():
+    """Invalidate cached extraction (called from the depsgraph handler)."""
+    global _SCENE_VERSION
+    if _RENDERING:  # our own temporary modifier toggles must not invalidate the snapshot
+        return
+    _SCENE_VERSION += 1
+
+
+def invalidate_snapshot():
+    _SNAP_CACHE["key"] = None
+    _SNAP_CACHE["snap"] = None
+
+
+def _geometry_signature(context, scene):
+    """Cheap fingerprint of the scene's geometry.
+
+    The depsgraph handler already invalidates on normal edits, but scripts can poke
+    mesh data without an event; a strided vertex checksum catches those.
+    """
+    parts = [scene.name, int(scene.frame_current)]
+    layer = context.view_layer.name if context.view_layer else ""
+    parts.append(layer)
+    for ob in scene.objects:
+        if ob.type not in ('MESH', 'CURVE', 'CURVES'):
+            continue
+        me = getattr(ob, "data", None)
+        if me is None:
+            continue
+        parts.append(ob.name)
+        m = ob.matrix_world.translation
+        parts.append((round(m.x, 4), round(m.y, 4), round(m.z, 4)))
+        nv = len(getattr(me, "vertices", ()) or ())
+        parts.append(nv)
+        if nv:
+            co = np.empty(nv * 3, np.float32)
+            try:
+                me.vertices.foreach_get("co", co)
+            except Exception:  # noqa: BLE001 - never break a render over a cache hint
+                continue
+            stride = max(1, nv // 48)
+            parts.append(tuple(np.round(co.reshape(-1, 3)[::stride].sum(axis=0), 4).tolist()))
+    return tuple(parts)
+
+
 def _render_impl(context, scene, lf, sets, width, height):
     t0 = time.perf_counter()
+    _LAST["cache_hit"] = False
     exclude = [s for s in getattr(scene.lf, "exclude_objects", "").split(",") if s.strip()]
     ss = max(1, min(4, int(getattr(scene.lf, "supersample", 1))))
     skip_shells = bool(getattr(scene.lf, "skip_outline_shells", True))
     skip_transparent = bool(getattr(scene.lf, "skip_transparent_faces", True))
     alpha_threshold = float(getattr(scene.lf, "alpha_threshold", 0.5))
+    keep_names = [s for s in getattr(scene.lf, "skip_transparent_whitelist", "").split(",") if s.strip()]
+    hair = bool(getattr(scene.lf, "hair_lines", True))
+    hair_max = int(getattr(scene.lf, "hair_max_strands", 4000))
+    hair_points = int(getattr(scene.lf, "hair_points", 32))
     rw = width * ss
     rh = height * ss
-    snap = extract(context, rw, rh, exclude=exclude, skip_shells=skip_shells,
-                   skip_transparent=skip_transparent, alpha_threshold=alpha_threshold)
+    sig = _geometry_signature(context, scene)
+    key = (int(scene.frame_current), _SCENE_VERSION, sig, rw, rh, tuple(exclude),
+           bool(skip_shells), bool(skip_transparent), float(alpha_threshold),
+           tuple(keep_names), bool(hair), hair_max, hair_points,
+           scene.name, context.view_layer.name if context.view_layer else "")
+    snap = _SNAP_CACHE["snap"] if _SNAP_CACHE["key"] == key else None
+    if snap is None:
+        snap = extract(context, rw, rh, exclude=exclude, skip_shells=skip_shells,
+                       skip_transparent=skip_transparent, alpha_threshold=alpha_threshold,
+                       transparent_keep=keep_names, hair=hair,
+                       hair_max_strands=hair_max, hair_points=hair_points)
+        _SNAP_CACHE["key"] = key
+        _SNAP_CACHE["snap"] = snap
+        _LAST["cache_hit"] = False
+    else:
+        _LAST["cache_hit"] = True
     accum = np.zeros((rh, rw, 4), np.float32)
     all_lines = []
     total_strokes = 0
@@ -300,6 +433,9 @@ def _render_impl(context, scene, lf, sets, width, height):
             ln["widths"] = np.asarray(ln["widths"], np.float32) * inv
 
     elapsed = (time.perf_counter() - t0) * 1000.0
+    global _RENDER_ID
+    _RENDER_ID += 1
+    _LAST["render_id"] = _RENDER_ID
     _LAST["lines"] = all_lines
     _LAST["image"] = accum
     _LAST["size"] = (width, height)
@@ -314,6 +450,8 @@ def _render_impl(context, scene, lf, sets, width, height):
         "sets": len(sets),
         "size": (width, height),
         "supersample": ss,
+        "cache_hit": bool(_LAST.get("cache_hit", False)),
+        "frame": int(scene.frame_current),
     }
     return accum
 

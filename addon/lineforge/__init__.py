@@ -3,7 +3,7 @@
 bl_info = {
     "name": "LineForge",
     "author": "LineForge contributors",
-    "version": (0, 2, 1),
+    "version": (0, 3, 0),
     "blender": (5, 2, 0),
     "location": "View3D > Sidebar > LineForge",
     "description": "CPU line-art renderer: silhouette, crease, border, material and intersection lines",
@@ -40,6 +40,7 @@ def _render_pre(scene, *_args):
 
 def _depsgraph_update(scene, *_args):
     overlay.mark_dirty()
+    renderer.mark_scene_changed()
 
 
 _MODULES = (nodes, properties, operators, panels)

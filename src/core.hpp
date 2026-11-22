@@ -45,6 +45,13 @@ struct Style {
     float random_width = 0.f;  // 0..1 amplitude
     float distance_fade = 0.f; // fade length in view units, 0 = off
     float fade_start = 0.f;    // view distance where fade begins
+    // Line pattern (dashes/dots) and procedural brush texture along the stroke.
+    int pattern = 0;           // 0 = solid, 1 = dash, 2 = dot
+    float pattern_period = 16.f; // pixels per cycle
+    float pattern_duty = 0.55f;  // fraction of the cycle that is drawn
+    int texture = 0;           // 0 = none, 1 = charcoal, 2 = pencil, 3 = ink
+    float texture_scale = 1.f;
+    float simplify_px = -1.f;  // per-style override, < 0 = use Settings::simplify_px
 };
 
 struct Brush {
@@ -73,6 +80,14 @@ struct Settings {
 
     float intersection_depth_tol = 0.01f;
     int seed = 12345;
+
+    // Hair / strand polylines (Blender CURVES objects). These are drawn as
+    // capsules with a per-point world-space radius, so a strand always keeps a
+    // visible thickness no matter how far away it is.
+    bool draw_strands = true;
+    float strand_width_scale = 1.0f;
+    float strand_min_px = 0.6f;
+    Rgba strand_color{0.f, 0.f, 0.f, 1.f};
 };
 
 struct SceneView {
@@ -94,6 +109,14 @@ struct SceneView {
     Mat4 proj;
     const float* view = nullptr; // optional world->camera matrix (row-major), enables true w/depth
     Vec3 cam_pos;
+
+    // Optional strand polylines: nstrand_pts world positions, nstrands runs
+    // delimited by strand_offsets (nstrands + 1 entries), plus one radius per point.
+    const float* strand_pts = nullptr;
+    int nstrand_pts = 0;
+    const int32_t* strand_offsets = nullptr;
+    int nstrands = 0;
+    const float* strand_radius = nullptr;
 };
 
 struct Polyline {

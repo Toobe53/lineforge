@@ -10,6 +10,7 @@ from . import renderer
 _HANDLE = None
 _DIRTY = {"value": True}
 _SHADER = {"obj": None, "name": None, "failed": False}
+_CACHE = {"key": None, "batches": [], "verts": 0}
 
 
 def mark_dirty(*_args, **_kwargs):
@@ -124,8 +125,20 @@ def draw():
     if shader is None:
         return
 
-    groups = _build(region.width, region.height, size[0], size[1])
-    if not groups:
+    # The strip build + GPU batch creation is the expensive part, so it is cached
+    # until the line data or the region size actually changes. Navigation just
+    # re-draws the existing batches.
+    key = (renderer.last_render_id(), region.width, region.height, size[0], size[1])
+    if _CACHE["key"] != key:
+        groups = _build(region.width, region.height, size[0], size[1])
+        _CACHE["key"] = key
+        _CACHE["batches"] = []
+        _CACHE["verts"] = 0
+        for col, alpha, arr in groups:
+            _CACHE["batches"].append(
+                (col, alpha, batch_for_shader(shader, 'TRIS', {"pos": arr}), int(arr.shape[0])))
+            _CACHE["verts"] += int(arr.shape[0])
+    if not _CACHE["batches"]:
         return
     gpu.state.blend_set('ALPHA')
     gpu.state.depth_test_set('NONE')
@@ -134,9 +147,8 @@ def draw():
     except Exception:
         pass
     try:
-        for col, alpha, arr in groups:
+        for col, alpha, batch, _n in _CACHE["batches"]:
             shader.uniform_float("color", (col[0], col[1], col[2], alpha))
-            batch = batch_for_shader(shader, 'TRIS', {"pos": arr})
             batch.draw(shader)
     finally:
         gpu.state.blend_set('NONE')

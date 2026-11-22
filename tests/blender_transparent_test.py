@@ -5,6 +5,10 @@ import traceback
 
 import bpy
 
+ADDON = r"C:\LineForge\addon"
+if ADDON not in sys.path:
+    sys.path.insert(0, ADDON)
+
 W, H = 320, 240
 
 
@@ -65,12 +69,17 @@ def _render(skip_transparent):
 
 
 def main():
-    bpy.ops.wm.read_factory_settings(use_empty=True)
-    bpy.ops.preferences.addon_enable(module="lineforge")
+    import lineforge
     from lineforge import nodes, renderer  # noqa: F401
     globals()["nodes"] = nodes
     globals()["renderer"] = renderer
+    try:
+        lineforge.unregister()
+    except Exception:
+        pass
+    lineforge.register()
 
+    bpy.ops.wm.read_factory_settings(use_empty=True)
     scene = bpy.context.scene
     scene.render.engine = 'BLENDER_EEVEE'
     scene.render.resolution_x = W
@@ -112,6 +121,32 @@ def main():
     skipped = sum(1 for s in skip if s)
     print("SKIPPED_TRIS", skipped, "of", len(skip))
     assert skipped == 12, skipped
+
+    # Whitelisting by material name keeps the sheer cube in the pass.
+    snap_keep = __import__("lineforge.scene_extract", fromlist=["x"]).extract(
+        bpy.context, W, H, skip_transparent=True, transparent_keep=("sheer_0.05",))
+    print("WHITELIST_SKIP", sum(1 for s in snap_keep.tri_skip if s))
+    assert sum(1 for s in snap_keep.tri_skip if s) == 0, "whitelist must disable skipping"
+
+    # Coverage scoring: the peak term keeps a triangle that contains some opaque ink,
+    # while a uniformly transparent triangle is dropped.
+    import numpy as np
+    from lineforge import scene_extract
+
+    corners = np.array([
+        [[0.1, 0.1], [0.1, 0.2], [0.2, 0.1]],     # all transparent
+        [[0.8, 0.8], [0.8, 0.9], [0.9, 0.8]],     # all opaque
+        [[0.45, 0.5], [0.9, 0.5], [0.5, 0.9]],    # partially covered
+    ], np.float32)
+
+    def sample(u, v):
+        return np.where((u > 0.5) & (v > 0.5), 1.0, 0.2).astype(np.float32)
+
+    score = scene_extract._alpha_coverage(corners, sample)
+    print("COVERAGE_SCORE", [round(float(s), 3) for s in score])
+    assert score[0] < 0.5, score
+    assert score[1] > 0.9, score
+    assert score[2] > 0.5, score
 
     renderer.reset_core()
     print("TRANSPARENT OK")

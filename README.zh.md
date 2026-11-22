@@ -16,11 +16,27 @@ Blender 5.2 的线稿渲染插件：C++ 原生内核（pybind11，CPU 光栅）+
 线稿支持超采样（1–4×，默认 2）：在 N 倍分辨率下光栅化后盒式降采样，消除细线与陡斜线的锯齿；静帧可调到 3–4，视口预览可降到 1。
 
 **跳过透明面**（`Skip See-through Faces` + `Alpha Cutoff`）：材质用贴图驱动 Principled *Alpha* 时，
-按三角形 UV 质心采样该 alpha，低于阈值的面不进入 G-buffer、也不出线。否则半透明薄纱、睫毛片、
+在 7 个重心采样点上取覆盖率（均值与峰值各半），低于阈值的面，不进入 G-buffer、也不出线。`Keep Names` 可列出永不跳过的对象/材质子串（如 `eyelash, glasses`）。否则半透明薄纱、睫毛片、
 多层衣料在渲染里看不见，却会被当成不透明实体描出轮廓（VRM 裙子外那圈"鬼影锥"就是它）。
 
 **跳过描边壳**（`Skip Outline Shells`，默认开）：材质名含 `outline` 的反向壳，以及 `MToon Outline (...)`
 几何节点修改器生成的沿法线外推壳，都从提取时排除，避免遮挡真实表面。
+
+**每线集过滤**（LineSet 节点上的 `Objects` / `Materials` / `Skip Objects` / `Skip Materials`）：逗号分隔的
+通配符列表，一个节点树里可以让某个线集只画脸、只画某件衣服，或排除某个代理物体及其交线。
+
+**毛发曲线**：Blender 5.2 的 `CURVES` 对象直接按自身的点与半径画成锥形胶囊（`Hair Curves`、`Hair Width`、
+`Max Strands`、`Points per Strand`），不三角化、也不占 G-buffer。
+
+**线型与笔刷贴图**：每个线集可选 `Solid / Dash / Dot` 并设置周期与占空比；另有程序化 `Charcoal`、
+`Pencil`、`Ink` 纹理沿弧长调制线宽，以及线集级 `Simplify` 覆盖全局简化阈值。
+
+**动画快照缓存**：提取结果按帧缓存，由 depsgraph 回调加一个廉价的几何指纹（脚本直接改网格数据也不会拿到旧线）
+失效；同一帧第二次渲染完全跳过提取。
+
+**交线质量**：交线像素串成链后先桥接 1–3 px 的断口，再做 RDP + 两次 Chaikin 平滑，衣料接缝是连续曲线而不是点状台阶。
+
+**视口覆盖层缓存**：覆盖层的三角条带与 GPU batch 只在线数据或区域尺寸变化时重建，缩放/旋转相机仅重绘已有 batch。
 
 支持正交相机（用真实 clip 空间 w 与视图空间深度，不是透视近似）。正交相机下新增
 **Ortho Width Falloff** 开关：关闭时世界空间线宽折算成固定屏幕像素（平行投影语义），
@@ -32,7 +48,7 @@ MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一�
 
 ## 安装
 
-1. 用现成的包：`dist/lineforge-0.2.1.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
+1. 用现成的包：`dist/lineforge-0.3.0.zip`（已包含 Windows x64 编译好的 `bin/win64/lineforge_core.pyd`）。
 2. Blender → 编辑 › 偏好设置 › 插件 › 安装… → 选中该 zip → 勾选启用 **LineForge**。
 3. 本机已安装并启用（`%APPDATA%\Blender Foundation\Blender\5.2\scripts\addons\lineforge`）。
 4. 侧栏 **LineForge** 页签顶部显示内核状态；红色时点 *Check Native Core* 会显示平台标签与具体加载错误。
@@ -42,7 +58,7 @@ MSVC via vswhere）与 `tools/package.py`（纯标准库，和 CI 产出同一�
 ```powershell
 pwsh -File C:\LineForge\tools\get-toolchain.ps1   # 首次：下载 w64devkit + CPython 3.13 头 + pybind11
 pwsh -File C:\LineForge\build.ps1                 # 编译 src/*.cpp → addon/lineforge/bin/win64/lineforge_core.pyd
-pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.2.1.zip
+pwsh -File C:\LineForge\package.ps1               # 重新打包 dist/lineforge-0.3.0.zip
 ```
 
 Linux / macOS 用跨平台脚本或 CMake 自行构建（无需 Blender）：
@@ -93,4 +109,4 @@ cmake -B build -DPython_EXECUTABLE=$(which python3) && cmake --build build
 ## 性能参考
 
 `vrm_pcl_line5.blend`（55 网格 / 70,794 三角 / 116,144 边）在 1920×1080、4 个线集下：
-约 1500 条折线、20,000 段；超采样 2 下内核 **约 0.5 s**，含 depsgraph 提取约 2.5 s。
+约 1500 条折线、33,000 段；超采样 2 下内核 **约 0.6 s**，含 depsgraph 提取约 2.9 s（同一帧第二次渲染命中快照缓存，只付内核时间）。

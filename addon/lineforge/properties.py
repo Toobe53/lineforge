@@ -69,6 +69,31 @@ class LFSceneProps(PropertyGroup):
         max=1.0,
         description="Faces whose sampled material alpha is below this value are skipped",
     )
+    skip_transparent_whitelist: StringProperty(
+        name="Keep Names",
+        default="",
+        description="Comma separated object or material name substrings that are never treated "
+                    "as see-through (e.g. 'eyelash, glasses, FaceEyeline')",
+    )
+
+    hair_lines: BoolProperty(
+        name="Hair Curves",
+        default=True,
+        description="Draw hair curves (CURVES objects, e.g. Blender hair) as strand lines with "
+                    "their own radius, instead of ignoring them",
+    )
+    hair_width: FloatProperty(
+        name="Hair Width", default=1.0, min=0.05, max=8.0,
+        description="Multiplier for the geometric radius of hair strands",
+    )
+    hair_max_strands: IntProperty(
+        name="Max Strands", default=4000, min=0, max=200000,
+        description="Upper bound on the number of strands converted per render",
+    )
+    hair_points: IntProperty(
+        name="Points Per Strand", default=32, min=2, max=256,
+        description="Strands longer than this are decimated before drawing",
+    )
 
     stats_text: StringProperty(name="Stats", default="")
     last_error: StringProperty(name="Last Error", default="")

@@ -63,6 +63,12 @@ lf::Style parse_style(const py::dict& d) {
     if (d.contains("random_width")) s.random_width = d["random_width"].cast<float>();
     if (d.contains("distance_fade")) s.distance_fade = d["distance_fade"].cast<float>();
     if (d.contains("fade_start")) s.fade_start = d["fade_start"].cast<float>();
+    if (d.contains("pattern")) s.pattern = d["pattern"].cast<int>();
+    if (d.contains("pattern_period")) s.pattern_period = d["pattern_period"].cast<float>();
+    if (d.contains("pattern_duty")) s.pattern_duty = d["pattern_duty"].cast<float>();
+    if (d.contains("texture")) s.texture = d["texture"].cast<int>();
+    if (d.contains("texture_scale")) s.texture_scale = d["texture_scale"].cast<float>();
+    if (d.contains("simplify_px")) s.simplify_px = d["simplify_px"].cast<float>();
     return s;
 }
 
@@ -157,6 +163,24 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
         sv.nobj = int(obj_sel.shape(0));
     }
 
+    F32Arr strand_pts, strand_radius;
+    I32Arr strand_offsets;
+    if (scene.contains("strand_pts") && !scene["strand_pts"].is_none()) {
+        strand_pts = get_f32(scene, "strand_pts", 2, 3);
+        strand_offsets = get_i32(scene, "strand_offsets", 1);
+        if (strand_offsets.shape(0) < 2) throw std::runtime_error("strand_offsets too short");
+        sv.strand_pts = strand_pts.data();
+        sv.nstrand_pts = int(strand_pts.shape(0));
+        sv.strand_offsets = strand_offsets.data();
+        sv.nstrands = int(strand_offsets.shape(0)) - 1;
+        if (scene.contains("strand_radius") && !scene["strand_radius"].is_none()) {
+            strand_radius = get_f32(scene, "strand_radius", 1);
+            if (strand_radius.shape(0) != sv.nstrand_pts)
+                throw std::runtime_error("strand_radius size mismatch");
+            sv.strand_radius = strand_radius.data();
+        }
+    }
+
     if (settings.contains("width")) S.width = settings["width"].cast<int>();
     if (settings.contains("height")) S.height = settings["height"].cast<int>();
     if (settings.contains("want_image")) S.want_image = settings["want_image"].cast<bool>();
@@ -172,6 +196,13 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
         S.use_material_color = settings["use_material_color"].cast<bool>();
     if (settings.contains("intersection_depth_tol"))
         S.intersection_depth_tol = settings["intersection_depth_tol"].cast<float>();
+    if (settings.contains("draw_strands")) S.draw_strands = settings["draw_strands"].cast<bool>();
+    if (settings.contains("strand_width_scale"))
+        S.strand_width_scale = settings["strand_width_scale"].cast<float>();
+    if (settings.contains("strand_min_px"))
+        S.strand_min_px = settings["strand_min_px"].cast<float>();
+    if (settings.contains("strand_color") && !settings["strand_color"].is_none())
+        S.strand_color = parse_color(settings["strand_color"]);
 
     if (settings.contains("styles") && !settings["styles"].is_none()) {
         auto seq = py::reinterpret_borrow<py::sequence>(settings["styles"]);
@@ -232,7 +263,7 @@ py::dict render_scene(const py::dict& scene, const py::dict& settings) {
 
 PYBIND11_MODULE(lineforge_core, m) {
     m.doc() = "LineForge CPU line-rendering core";
-    m.attr("__version__") = "0.2.1";
+    m.attr("__version__") = "0.3.0";
     m.attr("LT_OBJECT") = int(lf::LT_OBJECT);
     m.attr("LT_CREASE") = int(lf::LT_CREASE);
     m.attr("LT_BOUNDARY") = int(lf::LT_BOUNDARY);
