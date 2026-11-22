@@ -6,6 +6,10 @@
 下载：[最新 release](https://github.com/Toobe53/lineforge/releases/latest) —— 一个 zip 里打包了
 Windows x64、Linux x64、macOS (arm64) 三份原生内核，全部由 `build.yml` CI 编译。
 
+![LineForge 在 VRM 角色上的合成效果](docs/composite_1080p.png)
+
+*线稿合成在 EEVEE 渲染之上（1920×1080，4 个线集，2× 超采样）；`docs/line_pass_1080p.png` 是纯线稿，`docs/crop_hair_1to1.png` 是 1:1 局部。*
+
 Blender 5.2 的线稿渲染插件：C++ 原生内核（pybind11，CPU 光栅）+ Python 节点树界面，
 全部在 Blender 进程内运行，不依赖任何外部渲染程序。许可证 GPL-2.0-or-later。
 

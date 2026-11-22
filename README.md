@@ -11,6 +11,14 @@ Downloads: [latest release](https://github.com/Toobe53/lineforge/releases/latest
 one zip with the native core for **Windows x64, Linux x64 and macOS (arm64)**, all three
 compiled by the `build.yml` CI workflow.
 
+![LineForge on a VRM character: line pass composited over the beauty render](docs/composite_1080p.png)
+
+*Line pass composited over an EEVEE render (1920×1080, 4 line sets, 2× supersampling).*
+
+| Line pass only | 1:1 crop |
+| --- | --- |
+| ![Line pass](docs/line_pass_1080p.png) | ![1:1 crop](docs/crop_hair_1to1.png) |
+
 * Native core: C++17 + pybind11 (`lineforge_core.pyd`), CPU G-buffer + capsule raster.
 * Five line types: outline/silhouette, crease, mesh border, material boundary, object intersection.
 * Per-line-set style: width (screen or world space), colour, taper in/out, random width, distance fade, brush.
