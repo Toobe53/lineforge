@@ -2,6 +2,7 @@
 
 [![build](https://github.com/Toobe53/lineforge/actions/workflows/build.yml/badge.svg)](https://github.com/Toobe53/lineforge/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/release/Toobe53/lineforge?include_prereleases&sort=semver)](https://github.com/Toobe53/lineforge/releases)
+[![docs](https://img.shields.io/badge/docs-site-blue)](https://toobe53.github.io/lineforge/)
 
 下载：[最新 release](https://github.com/Toobe53/lineforge/releases/latest) —— 一个 zip 里打包了
 Windows x64、Linux x64、macOS (arm64) 三份原生内核，全部由 `build.yml` CI 编译。

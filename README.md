@@ -2,6 +2,7 @@
 
 [![build](https://github.com/Toobe53/lineforge/actions/workflows/build.yml/badge.svg)](https://github.com/Toobe53/lineforge/actions/workflows/build.yml)
 [![release](https://img.shields.io/github/v/release/Toobe53/lineforge?include_prereleases&sort=semver)](https://github.com/Toobe53/lineforge/releases)
+[![docs](https://img.shields.io/badge/docs-site-blue)](https://toobe53.github.io/lineforge/)
 
 Line-art rendering for **Blender 5.2**, built on the same ideas as Pencil+ 4 Line:
 a native CPU line renderer driven by a node tree of *line sets*, composited over the
