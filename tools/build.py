@@ -119,19 +119,36 @@ def find_python_home(explicit: str | None) -> tuple[str, str, str]:
 
 
 def find_pybind11(explicit: str | None) -> str:
-    candidates = []
+    candidates: list[str] = []
     if explicit:
+        candidates.append(explicit)
         candidates.append(os.path.join(explicit, "include"))
     if os.environ.get("PYBIND11_INCLUDE"):
         candidates.append(os.environ["PYBIND11_INCLUDE"])
     candidates.append(os.path.join(ROOT, "toolchain", "pybind11", "pybind11", "include"))
+    candidates.append(os.path.join(ROOT, "toolchain", "pybind11", "include"))
+    try:
+        import pybind11  # noqa: PLC0415
+
+        candidates.append(pybind11.get_include())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import sysconfig  # noqa: PLC0415
+
+        for key in ("purelib", "platlib"):
+            path = sysconfig.get_paths().get(key)
+            if path:
+                candidates.append(os.path.join(path, "pybind11", "include"))
+    except Exception:  # noqa: BLE001
+        pass
     for base in candidates:
         if base and os.path.isfile(os.path.join(base, "pybind11", "pybind11.h")):
             return base
     die(
         "pybind11 headers not found.\n"
-        "  download pybind11 (>=2.11) and pass --pybind11 <dir containing include/>, or set\n"
-        "  PYBIND11_INCLUDE=<dir with pybind11/pybind11.h>."
+        "  install it with 'python -m pip install pybind11', download a release and pass\n"
+        "  --pybind11 <dir containing pybind11/pybind11.h>, or set PYBIND11_INCLUDE."
     )
 
 
